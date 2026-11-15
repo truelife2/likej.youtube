@@ -1,0 +1,250 @@
+:root {
+  color-scheme: dark;
+  --bg: #17181c;
+  --panel: #202127;
+  --line: #303239;
+  --fg: #eceff4;
+  --muted: #9aa0ac;
+  --accent: #ff4d4d;
+  --ok: #3ddc84;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 380px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.brand {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: block;
+}
+
+.badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #2b2d34;
+  color: var(--muted);
+}
+.badge.connected {
+  background: rgba(61, 220, 132, 0.16);
+  color: var(--ok);
+}
+.badge.connecting,
+.badge.starting,
+.badge.reconnecting {
+  background: rgba(245, 197, 66, 0.16);
+  color: #f5c542;
+}
+.badge.error {
+  background: rgba(255, 90, 90, 0.16);
+  color: #ff7a7a;
+}
+
+main {
+  padding: 12px 14px 16px;
+}
+
+.field {
+  margin-bottom: 12px;
+}
+
+.field.two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+label {
+  display: block;
+  font-size: 12.5px;
+  color: #cfd4de;
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
+input[type="text"],
+input[type="password"],
+input:not([type]),
+select {
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+}
+input:focus,
+select:focus {
+  border-color: #4a4d57;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+}
+.row > input,
+.row > select {
+  flex: 1;
+  min-width: 0;
+}
+
+.ghost {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-size: 13px;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+.ghost:hover {
+  color: var(--fg);
+}
+
+.hint {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #a6adbb;
+}
+.hint a {
+  color: #7aa2ff;
+}
+
+/* 本機辨識服務的即時狀態 */
+.asrline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: #a6adbb;
+}
+.asrline .ghost {
+  margin-left: auto;
+}
+.asrdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b7280;
+  flex: none;
+}
+.asrdot.ok { background: #38b56b; }
+.asrdot.bad { background: #d85555; }
+.asrdot.wait { background: #d9a521; }
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+/* 核取方塊：整列可點，標籤不要變成全大寫小字 */
+.field.check label,
+.checkline {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--fg);
+  cursor: pointer;
+}
+.field.check input[type="checkbox"],
+.checkline input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+}
+.checkline span {
+  flex: 1;
+}
+/* 勾選項底下的兩個秒數下拉，跟選項放在同一個區塊裡才看得出是同一件事 */
+.field .two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+
+button.primary,
+button.secondary {
+  flex: 1;
+  padding: 10px;
+  border-radius: 9px;
+  border: 0;
+  font: 600 13px/1 inherit;
+  cursor: pointer;
+}
+button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+button.primary:hover {
+  background: #ff6a6a;
+}
+button.primary:disabled {
+  background: #4a3a3a;
+  color: #9c8e8e;
+  cursor: default;
+}
+button.secondary {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+}
+
+.status {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  min-height: 1.2em;
+  word-break: break-word;
+}
+.status.error {
+  color: #ff7a7a;
+}

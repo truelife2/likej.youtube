@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>YouTube 即時口譯</title>
+  </head>
+  <body>
+    <header>
+      <span class="title"><img class="brand" src="icons/icon48.png" alt="" />YouTube 即時口譯</span>
+      <span class="badge" id="badge">未啟動</span>
+      <a class="ghost" id="openOptions" href="options.html" target="_blank" rel="noreferrer" title="本機辨識設定">⚙</a>
+    </header>
+
+    <main>
+      <section class="field">
+        <label for="apiKey">Gemini API Key</label>
+        <div class="row">
+          <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…" />
+          <button class="ghost" id="toggleKey" type="button" title="顯示/隱藏">👁</button>
+        </div>
+        <p class="hint">
+          只儲存在這台電腦的瀏覽器（chrome.storage.local），不會上傳到其他地方。
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">取得金鑰</a>
+        </p>
+      </section>
+
+      <section class="field">
+        <label for="engine">翻譯引擎</label>
+        <select id="engine">
+          <option value="live">Gemini 即時翻譯（有配音，可能越翻越慢）</option>
+          <option value="local">本機 Whisper + Gemini 文字（只有字幕，延遲固定）</option>
+        </select>
+        <p class="hint" id="engineHint"></p>
+      </section>
+
+      <div id="localBox">
+        <section class="field">
+          <label for="asrUrl">本機辨識服務</label>
+          <input id="asrUrl" spellcheck="false" placeholder="http://127.0.0.1:8791" />
+          <div class="asrline">
+            <span class="asrdot" id="asrDot"></span>
+            <span id="asrStatus">檢查中…</span>
+            <button class="ghost" id="asrStart" type="button" title="啟動本機辨識服務">▶</button>
+            <button class="ghost" id="asrCheck" type="button" title="重新檢查">↻</button>
+          </div>
+          <p class="hint">
+            建議執行一次 <b>local-asr\install-autostart.cmd</b>，之後開機就會自動啟動、不用再手動開視窗。
+            只跑一次則用 <b>local-asr\start.cmd</b>。
+          </p>
+        </section>
+
+        <section class="field">
+          <label for="asrLang">原文語言</label>
+          <select id="asrLang">
+            <option value="auto">自動偵測（較慢但什麼語言都行）</option>
+            <option value="en">English 英文</option>
+            <option value="ja">日本語 日文</option>
+            <option value="ko">한국어 韓文</option>
+            <option value="zh">中文</option>
+            <option value="es">Español 西班牙文</option>
+            <option value="fr">Français 法文</option>
+            <option value="de">Deutsch 德文</option>
+            <option value="pt">Português 葡萄牙文</option>
+            <option value="ru">Русский 俄文</option>
+            <option value="ar">العربية 阿拉伯文</option>
+            <option value="hi">हिन्दी 印地文</option>
+            <option value="th">ภาษาไทย 泰文</option>
+            <option value="vi">Tiếng Việt 越南文</option>
+            <option value="id">Bahasa Indonesia 印尼文</option>
+          </select>
+          <p class="hint">指定語言比自動偵測快也更準。聲音是英文就選英文，選錯會變成亂碼或殘字。</p>
+        </section>
+
+        <section class="field">
+          <label for="asrModel">Whisper 模型</label>
+          <div class="row">
+            <select id="asrModel"></select>
+            <button class="ghost" id="fetchAsrModels" type="button" title="掃描模型資料夾">↻</button>
+          </div>
+          <p class="hint" id="asrModelHint">
+            按 ↻ 掃描服務的模型資料夾後選一個；換模型會立刻重新載入（約 2–6 秒）。留空＝用伺服器啟動時指定的模型。
+          </p>
+        </section>
+
+        <section class="field">
+          <label for="textModel">翻譯用文字模型</label>
+          <div class="row">
+            <select id="textModel"></select>
+            <button class="ghost" id="fetchTextModels" type="button" title="用你的金鑰查詢可用文字模型">↻</button>
+          </div>
+          <p class="hint" id="textModelHint">
+            純文字翻譯，每句約 0.5–1.5 秒。字幕由 Whisper 的英文字幕翻過來，延遲固定、不會越積越多。
+          </p>
+        </section>
+      </div>
+
+      <div id="liveBox">
+      <section class="field">
+        <label for="model">模型</label>
+        <div class="row">
+          <select id="model"></select>
+          <button class="ghost" id="fetchModels" type="button" title="用你的金鑰查詢可用模型">↻</button>
+        </div>
+        <p class="hint" id="modelHint">
+          建議用 <b>gemini-3.5-live-translate-preview</b>：專用即時翻譯模型，邊講邊翻、字幕連續輸出。
+          按 ↻ 可列出你金鑰可用的模型。
+        </p>
+      </section>
+      </div>
+
+      <section class="field">
+        <label for="targetLanguage">翻譯成</label>
+        <select id="targetLanguage">
+          <option value="繁體中文（台灣）">繁體中文（台灣）</option>
+          <option value="简体中文">简体中文</option>
+          <option value="English">English</option>
+          <option value="日本語">日本語</option>
+          <option value="한국어">한국어</option>
+          <option value="Español">Español</option>
+          <option value="Français">Français</option>
+          <option value="Deutsch">Deutsch</option>
+          <option value="Italiano">Italiano</option>
+          <option value="Português">Português</option>
+          <option value="Русский">Русский</option>
+          <option value="العربية">العربية</option>
+          <option value="हिन्दी">हिन्दी</option>
+          <option value="ภาษาไทย">ภาษาไทย</option>
+          <option value="Tiếng Việt">Tiếng Việt</option>
+          <option value="Bahasa Indonesia">Bahasa Indonesia</option>
+        </select>
+        <p class="hint" id="langCodeHint"></p>
+      </section>
+
+      <section class="field">
+        <label class="checkline">
+          <input type="checkbox" id="autoPause" checked />
+          <span>翻譯積太多時自動暫停影片，等它翻完再繼續</span>
+        </label>
+        <div class="two">
+          <div>
+            <label for="pauseAfterSec">累積幾秒才暫停</label>
+            <select id="pauseAfterSec">
+              <option value="15">15 秒</option>
+              <option value="30">30 秒</option>
+              <option value="45">45 秒</option>
+              <option value="60">60 秒</option>
+              <option value="90">90 秒</option>
+              <option value="120">120 秒</option>
+            </select>
+          </div>
+          <div>
+            <label for="resumeSec">翻到剩幾秒恢復</label>
+            <select id="resumeSec">
+              <option value="0">0 秒（一翻完就復播）</option>
+              <option value="5">5 秒</option>
+              <option value="10">10 秒</option>
+              <option value="20">20 秒</option>
+              <option value="30">30 秒</option>
+            </select>
+          </div>
+        </div>
+        <p class="hint" id="pauseHint"></p>
+      </section>
+
+      <section class="field two">
+        <div>
+          <label for="mode">輸出</label>
+          <select id="mode">
+            <option value="dub">語音配音 + 字幕</option>
+            <option value="text">僅字幕（最快）</option>
+          </select>
+        </div>
+        <div>
+          <label for="voice">嗓音</label>
+          <select id="voice">
+            <option value="Kore">Kore（女聲・沉穩）</option>
+            <option value="Zephyr">Zephyr（女聲・明亮）</option>
+            <option value="Leda">Leda（女聲・年輕）</option>
+            <option value="Aoede">Aoede（女聲・輕快）</option>
+            <option value="Callirrhoe">Callirrhoe（女聲・隨和）</option>
+            <option value="Autonoe">Autonoe（女聲・明亮）</option>
+            <option value="Despina">Despina（女聲・柔順）</option>
+            <option value="Erinome">Erinome（女聲・清晰）</option>
+            <option value="Laomedeia">Laomedeia（女聲・活潑）</option>
+            <option value="Achernar">Achernar（女聲・柔和）</option>
+            <option value="Gacrux">Gacrux（女聲・成熟）</option>
+            <option value="Pulcherrima">Pulcherrima（女聲・積極）</option>
+            <option value="Vindemiatrix">Vindemiatrix（女聲・溫柔）</option>
+            <option value="Sulafat">Sulafat（女聲・溫暖）</option>
+            <option value="Puck">Puck（男聲・活潑）</option>
+            <option value="Charon">Charon（男聲・資訊感）</option>
+            <option value="Fenrir">Fenrir（男聲・激昂）</option>
+            <option value="Orus">Orus（男聲・沉穩）</option>
+            <option value="Enceladus">Enceladus（男聲・氣音）</option>
+            <option value="Iapetus">Iapetus（男聲・清晰）</option>
+            <option value="Umbriel">Umbriel（男聲・隨和）</option>
+            <option value="Algieba">Algieba（男聲・平滑）</option>
+            <option value="Algenib">Algenib（男聲・沙啞）</option>
+            <option value="Rasalgethi">Rasalgethi（男聲・資訊感）</option>
+            <option value="Alnilam">Alnilam（男聲・沉穩）</option>
+            <option value="Schedar">Schedar（男聲・平穩）</option>
+            <option value="Achird">Achird（男聲・友善）</option>
+            <option value="Zubenelgenubi">Zubenelgenubi（男聲・隨性）</option>
+            <option value="Sadachbia">Sadachbia（男聲・生動）</option>
+            <option value="Sadaltager">Sadaltager（男聲・博學）</option>
+          </select>
+        </div>
+        <p class="hint" id="modeHint">「僅字幕」只要求文字輸出，最省 token。若模型是 native-audio 系列（只支援語音輸出），會自動改成「要語音但不播放」，字幕仍照常顯示。</p>
+        <p class="hint" id="voiceHint"></p>
+      </section>
+
+      <section class="field">
+        <label for="vad">切句方式</label>
+        <select id="vad">
+          <option value="client">自動切句（推薦：翻譯較連貫）</option>
+          <option value="auto">連續串流（延遲低，但容易片段化）</option>
+        </select>
+        <p class="hint" id="vadHint">偵測到停頓約 0.6 秒才把這一句送給模型，模型拿到完整句子，譯文與配音才不會零散。</p>
+      </section>
+
+      <section class="field">
+        <label for="vadSensitivity">收音靈敏度 <span id="sensText">5</span></label>
+        <input id="vadSensitivity" type="range" min="1" max="10" step="1" />
+        <p class="hint">講話太小聲沒反應就調高；背景音樂一直誤觸發就調低。</p>
+      </section>
+
+      <section class="field">
+        <label for="speechLanguageCode">配音語言代碼（可留空）</label>
+        <input id="speechLanguageCode" spellcheck="false" placeholder="例：ja-JP、en-US、cmn-CN" />
+        <p class="hint">留空就由模型自動判斷發音語言。填錯可能導致工作階段初始化失敗。</p>
+      </section>
+
+      <section class="field two">
+        <div>
+          <label for="outputVolume">翻譯音量 <span id="dubVolText">100%</span></label>
+          <input id="outputVolume" type="range" min="0" max="150" step="5" />
+        </div>
+        <div>
+          <label for="originalVolume">原音音量 <span id="volText">25%</span></label>
+          <input id="originalVolume" type="range" min="0" max="100" step="5" />
+        </div>
+      </section>
+      <p class="hint">兩個音量都可以在播放中直接調整，不用停止。</p>
+
+      <section class="field">
+        <label for="duckLevel">配音說話時的原音</label>
+        <select id="duckLevel">
+          <option value="1">不壓低（原音照上面設定的音量）</option>
+          <option value="0.5">壓到 50%</option>
+          <option value="0.25">壓到 25%</option>
+          <option value="0.12">壓到 12%（預設，翻譯最清楚）</option>
+          <option value="0.05">壓到 5%（幾乎只剩翻譯）</option>
+        </select>
+        <p class="hint" id="duckHint">上面的「原音音量」是基準值，這裡是「譯音正在說話時」再乘上的比例。只有譯音播放時才套用，其餘時間照基準值播放。</p>
+      </section>
+
+      <div class="actions">
+        <button id="start" class="primary" type="button">開始翻譯</button>
+        <button id="stop" class="secondary" type="button" hidden>停止</button>
+      </div>
+
+      <p class="status" id="status">請先開啟 YouTube 頁面。</p>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

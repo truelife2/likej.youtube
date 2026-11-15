@@ -1,0 +1,24 @@
+# 測試素材（數十 MB 的音訊與字幕，不進版控）
+testmedia/
+
+# 執行期日誌
+.logs/
+*.log
+
+# 原生主機的機器相關產物（每台電腦路徑不同，重跑 install.cmd 即可重建）
+native-host/*.exe
+native-host/launcher.json
+native-host/com.ytlt.asr.json
+
+# 本機設定（含個人路徑）
+local-asr/config.json
+
+# Python
+__pycache__/
+*.pyc
+
+# 編輯器 / 系統
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

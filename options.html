@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <title>YouTube 即時口譯 — 本機辨識設定</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1><img class="brand" src="icons/icon48.png" alt="" />本機辨識設定</h1>
+      <p class="lead">
+        這一頁控制「本機 Whisper + Gemini 文字」引擎的 Whisper 服務。設定一次就好，
+        之後按「開始」會自動把它叫起來，不需要再開黑色視窗。
+      </p>
+
+      <section class="card">
+        <h2>服務狀態</h2>
+        <div class="statusline">
+          <span class="dot" id="dot"></span>
+          <span id="statusText">檢查中…</span>
+        </div>
+        <div class="btns">
+          <button id="btnStart" class="primary" type="button">啟動服務</button>
+          <button id="btnStop" type="button">停止服務</button>
+          <button id="btnRefresh" type="button">重新檢查</button>
+          <button id="btnReloadExt" class="danger" type="button" style="display:none">重新載入擴充功能</button>
+        </div>
+        <p class="hint" id="hostHint"></p>
+        <p class="hint" style="opacity:.7">
+          擴充功能 ID：<code id="extId">…</code>　若出現「native host not found」，把這串貼到
+          <code>native-host\install.cmd &lt;ID&gt;</code> 重新執行一次。
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Python</h2>
+        <div class="row">
+          <input id="python" spellcheck="false" placeholder="C:\ai\ComfyUI_windows_portable\python_embeded\python.exe" />
+          <button id="btnDetect" type="button">自動偵測</button>
+        </div>
+        <p class="hint">
+          用 ComfyUI 內建的 Python 就好，裡面已經有 torch 與 transformers，不必另外安裝任何套件。
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Whisper 模型</h2>
+        <label for="modelsRoot">模型資料夾</label>
+        <div class="row">
+          <input id="modelsRoot" spellcheck="false" />
+          <button id="btnScan" type="button">掃描</button>
+        </div>
+        <label for="model" class="mt">要使用的模型</label>
+        <select id="model">
+          <option value="">（自動：伺服器啟動時的模型）</option>
+        </select>
+        <p class="hint">
+          掃描會列出資料夾裡所有 HuggingFace 格式的 Whisper（含 config.json 的資料夾）。
+          turbo 準確度略低但快一倍；large-v3 慢一些、對口音與背景音更穩。
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>連線</h2>
+        <label for="port">連接埠</label>
+        <input id="port" type="number" min="1024" max="65535" step="1" />
+        <p class="hint">擴充功能預設連到 8791；改這裡之後也要在 popup 的「本機辨識服務」改成相同埠號。</p>
+      </section>
+
+      <section class="card">
+        <h2>開機自動啟動</h2>
+        <label class="check">
+          <input type="checkbox" id="autostart" />
+          <span>登入 Windows 後自動啟動 Whisper 服務（背景執行，沒有視窗）</span>
+        </label>
+        <p class="hint">
+          不勾也可以：只要安裝過原生主機，按「開始」時會在需要時自動啟動。
+          勾起來只是讓第一部影片少等幾秒。
+        </p>
+      </section>
+
+      <div class="savebar">
+        <button id="btnSave" class="primary" type="button">儲存設定</button>
+        <span id="saveMsg"></span>
+      </div>
+
+      <p class="foot">
+        沒有原生主機（顯示「無法連上原生主機」）時，執行一次
+        <code>native-host\install.cmd</code>；或退而求其次手動執行
+        <code>local-asr\start.cmd</code>。
+      </p>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
