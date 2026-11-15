@@ -40,6 +40,7 @@ const live = {
   pcmParts: [],
   pcmLen: 0,
   pcmRate: 24000,
+  pcmAt: 0,
   flushTimer: 0,
   sentBoundary: false,
 
@@ -1185,12 +1186,14 @@ function playPcm(b64, mimeType) {
 /* 連續串流模型一次只回幾十毫秒的音訊。
    逐塊排程會在每個接縫留下缺口（聽起來就是「幾個字、停一下」），
    所以先把音塊併起來，等「一個句子」的譯音都到齊，再用一個 AudioBuffer 播出。
-   句子邊界由譯文逐字稿的句尾標點判斷（。！？!?）；
-   等不到邊界時最多累積 PCM_MAX 秒，避免延遲無限長大。 */
-const PCM_LEAD = 0.5; // 開播前先緩衝 0.5 秒（吸收網路抖動，避免一開口就斷）
-const PCM_MAX = 3.0; // 等不到句子結尾時，最多累積這麼久就播
-const PCM_MIN = 0.25; // 少於這個量不主動播（除非斷炊）
-const FLUSH_DEBOUNCE = 180; // 看到句尾標點後再等 180ms，讓句尾的音訊到齊
+   一句只播一次的三個觸發點：
+   ① 譯文逐字稿出現句尾標點（。！？!?）後再等 FLUSH_DEBOUNCE 毫秒 → 最準
+   ② 音訊本身停下來超過 800ms（模型這句講完了，逐字稿還沒標點時靠這個）
+   ③ 累積超過 PCM_MAX 秒的保底，避免延遲無限長大
+   播放中絕不因為「快斷炊」提前切句，否則一句會被切成好幾段。 */
+const PCM_LEAD = 0.6; // 開播前先緩衝（吸收網路抖動，避免一開口就斷）
+const PCM_MAX = 8.0; // 等不到句子結尾時的保底（正常句子遠短於此，等同不切句）
+const FLUSH_DEBOUNCE = 400; // 看到句尾標點後再等 400ms，讓句尾（含數字）的音訊到齊
 
 // 譯文出現句尾標點 → 這句的譯音應該都到了，可以整段播
 function markSentenceEnd(text) {
@@ -1212,17 +1215,88 @@ function queuePcm(f32, rate) {
   }
   live.pcmParts.push(f32);
   live.pcmLen += f32.length;
+  live.pcmAt = Date.now();
 
   const secs = live.pcmLen / (live.pcmRate || 24000);
-  const ahead = live.playCursor - ctx.currentTime;
 
-  // 只在「真的快斷炊」時才提前播出未完成的句子。
-  // 太早播會讓同一句話被切成好幾段，聽起來就是斷斷續續。
-  if (secs >= PCM_MAX) {
-    flushPcm();
-    return;
+  // 只在句子已經長到保底上限時才播出未完成的句子。
+  // 其餘一律等句尾標點（markSentenceEnd 的 debounce）→ 一句只播一次，句中不會被切開。
+  // （之前「快斷炊就先播」的條件會把一句切成好幾段，是「唸幾個字就停」的主因。）
+  if (secs >= PCM_MAX) flushPcm();
+}
+
+// 線性內插重取樣（24kHz → 裝置取樣率）。自己做的目的是讓 BufferSource 不必重取樣，
+// 音塊之間就能做到真正的樣本連續，不會每個節點邊界都留一小段空白。
+function resampleTo(f32, inRate, outRate) {
+  if (!outRate || !inRate || inRate === outRate) return f32;
+  const n = Math.max(1, Math.round((f32.length * outRate) / inRate));
+  const out = new Float32Array(n);
+  const step = inRate / outRate;
+  for (let i = 0; i < n; i++) {
+    const pos = i * step;
+    const i0 = pos | 0;
+    const frac = pos - i0;
+    const a = i0 < f32.length ? f32[i0] : 0;
+    const b = i0 + 1 < f32.length ? f32[i0 + 1] : a;
+    out[i] = a + (b - a) * frac;
   }
-  if (ahead <= 0.1 && secs >= 0.12) flushPcm();
+  return out;
+}
+
+// 模型輸出的譯音常常在字與字之間留一小段空白（數字、專有名詞尤其明顯），
+// 聽起來就是「唸幾個字、停一下」。這裡把句中的長空白壓短（0.18s → 0.05s），
+// 開頭與結尾的空白不動，太短的空白也不動，避免吃字。
+function smoothGaps(f32, rate) {
+  const n = f32.length;
+  if (!n || !rate) return f32;
+  const win = Math.max(1, Math.round(rate * 0.01)); // 10ms 一格
+  const blocks = Math.floor(n / win);
+  if (blocks < 20) return f32;
+
+  const loud = new Uint8Array(blocks);
+  for (let b = 0; b < blocks; b++) {
+    let peak = 0;
+    const s = b * win;
+    for (let i = s; i < s + win; i++) {
+      const v = f32[i] < 0 ? -f32[i] : f32[i];
+      if (v > peak) peak = v;
+    }
+    loud[b] = peak > 0.012 ? 1 : 0;
+  }
+
+  const minQuiet = Math.max(2, Math.round((0.18 * rate) / win));
+  const keepQuiet = Math.max(1, Math.round((0.05 * rate) / win));
+  const drops = [];
+  let removed = 0;
+  let i = 0;
+  while (i < blocks) {
+    if (loud[i]) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < blocks && !loud[j]) j++;
+    if (i > 0 && j < blocks && j - i >= minQuiet) {
+      drops.push([(i + keepQuiet) * win, j * win]);
+      removed += (j - i - keepQuiet) * win;
+    }
+    i = j;
+  }
+  if (!drops.length) return f32;
+  if (removed > n * 0.4) return f32; // 太誇張就整段照原樣播，避免吃字
+
+  const out = new Float32Array(n - removed);
+  let src = 0;
+  let dst = 0;
+  for (const [a, b] of drops) {
+    if (a > src) {
+      out.set(f32.subarray(src, a), dst);
+      dst += a - src;
+    }
+    src = b;
+  }
+  if (src < n) out.set(f32.subarray(src, n), dst);
+  return out;
 }
 
 function flushPcm() {
@@ -1232,9 +1306,12 @@ function flushPcm() {
   const total = live.pcmLen;
   if (!total) return;
 
-  let buffer;
+  // 先併成單一 Float32，再自己重取樣成「播放裝置的取樣率」。
+  // 若直接把 24kHz 的 buffer 丟給 48kHz 的 BufferSource，每個節點都會各自重取樣，
+  // 接縫處會留下極短的空隙 → 聽起來就是「幾個字、停一下」。
+  let joined;
   try {
-    buffer = ctx.createBuffer(1, total, rate);
+    joined = new Float32Array(total);
   } catch (_) {
     live.pcmParts = [];
     live.pcmLen = 0;
@@ -1242,10 +1319,21 @@ function flushPcm() {
   }
   let at = 0;
   for (const p of live.pcmParts) {
-    try {
-      buffer.copyToChannel(p, 0, at);
-    } catch (_) {}
+    joined.set(p, at);
     at += p.length;
+  }
+
+  const outRate = ctx.sampleRate || rate;
+  const pcm = resampleTo(smoothGaps(joined, rate), rate, outRate);
+
+  let buffer;
+  try {
+    buffer = ctx.createBuffer(1, pcm.length, outRate);
+    buffer.copyToChannel(pcm, 0, 0);
+  } catch (_) {
+    live.pcmParts = [];
+    live.pcmLen = 0;
+    return;
   }
   live.pcmParts = [];
   live.pcmLen = 0;
@@ -1309,6 +1397,7 @@ function resetPlayback() {
   live.sources.clear();
   live.pcmParts = [];
   live.pcmLen = 0;
+  live.pcmAt = 0;
   live.sentBoundary = false;
   if (live.flushTimer) {
     clearTimeout(live.flushTimer);
@@ -1546,14 +1635,13 @@ if (typeof setInterval === 'function') {
     emitStats(Date.now());
   }, 2000);
 
-  // 每 120ms 檢查一次：累積到上限、或排程真的斷炊時就播出去。
-  // 句尾的部分交給 markSentenceEnd() 的 debounce，避免同一句被切成好幾段。
+  // 每 120ms 檢查一次：只在句子超過保底上限時才播出。
+  // 句尾的交給 markSentenceEnd() 的 debounce → 一句只播一次，句中不會被切開。
   setInterval(() => {
     if (!live.running || !live.pcmLen) return;
-    const ctx = live.ctx;
-    if (!ctx) return;
+    if (!live.ctx) return;
     const secs = live.pcmLen / (live.pcmRate || 24000);
-    if (secs >= PCM_MAX) flushPcm();
-    else if (live.playCursor - ctx.currentTime <= 0.1 && secs >= 0.12) flushPcm();
+    const idle = live.pcmAt ? Date.now() - live.pcmAt : 0;
+    if (secs >= PCM_MAX || (idle >= 800 && secs >= 0.25)) flushPcm();
   }, 120);
 }
