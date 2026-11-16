@@ -48,10 +48,10 @@ const live = {
   inQuietSince: 0,
   lastPlayEnd: 0,
   textTail: '',
-  // 逐字稿常常比譯音先到，用「這個句子有多少字、平均每個字要幾秒譯音」估計
-  // 手上音訊是否已經夠整句（否則會把句尾幾個字切到下一段）
+  // 逐字稿常比譯音先到，用「每字平均幾秒譯音」粗估這句還缺多少音訊（最多只多等 0.8 秒）
   sPerChar: 0,
   curChars: 0,
+  holdSince: 0,
 
   // 連線
   ws: null,
@@ -1218,7 +1218,7 @@ const TRIM_TAIL = 0.1; // 每句結尾保留這麼多（模型常在句尾附一
 const PCM_MAX = 14.0; // 等不到句子結尾時的保底（正常句子遠短於此，等同不切句）
 const FLUSH_QUIET = 700; // 出現句尾標點後，音訊要靜止這麼久才算這句到齊
 // （模型常在句中「停頓一下再繼續」，等久一點就能把那段空白併進同一段，再壓縮掉）
-const FLUSH_MAX_WAIT = 6000; // 出現句尾標點後最多再等這麼久（音訊零碎滴進來時的保險）
+const FLUSH_MAX_WAIT = 4000; // 出現句尾標點後最多再等這麼久（音訊零碎滴進來時的保險）
 const SPEAKER_QUIET = 700; // 講者安靜這麼久 → 這句講完了
 const SPEAKER_IDLE = 300; // 講者已停，譯音再靜止這麼久就直接播
 const SPK_PEAK = 0.012; // 「有出聲」的峰值門檻（比 0.02 更低，避免把輕聲漏掉）
@@ -1235,12 +1235,8 @@ function textClosed(t) {
   return /[。！？!?…]["'」』）)]*\s*$/.test(s);
 }
 
-// 逐字稿經常比譯音先到（模型先吐文字，音訊晚一點才跟上）。
-// 只看「句尾標點出現」就播的話，句尾那幾個字往往還沒生成，
-// 會被切到下一段 → 聽起來就是「…他站 │ 起來…」。
-// 這裡用「每個字平均要幾秒譯音」的估計值（從已播出的段落學習）檢查：
-// 手上音訊明顯少於這句字數該有的長度時先不要播，等音訊補上再整句播。
 const ENUF_RATIO = 0.75; // 至少收到預期長度的 75% 才播
+const HOLD_MAX = 800; // 這個估算最多只能多等 0.8 秒（等太久會把下一句的開頭吸進來）
 function audioEnough(secs) {
   if (live.curChars < 3) return true;
   if (!(live.sPerChar > 0)) return true; // 還沒學到比例（剛開始）→ 不擋
@@ -1250,9 +1246,8 @@ function audioEnough(secs) {
 
 // 只算真正會唸出來的字（標點、空白不算）
 function visibleChars(t) {
-  const s = String(t || '');
   let n = 0;
-  for (const ch of s) if (/[\p{L}\p{N}]/u.test(ch)) n += 1;
+  for (const ch of String(t || '')) if (/[\p{L}\p{N}]/u.test(ch)) n += 1;
   return n;
 }
 
@@ -1426,13 +1421,14 @@ function flushPcm() {
     live.pcmLen = 0;
     return;
   }
-  // 學習「每個字大約幾秒譯音」，下一次判斷「音訊夠不夠整句」時要用
+  // 學習「每個字大約幾秒譯音」，下一次估「音訊夠不夠整句」時要用
   const audioSec = total / rate;
   if (live.curChars >= 4 && audioSec > 0.3) {
     const ratio = Math.max(0.04, Math.min(0.5, audioSec / live.curChars));
     live.sPerChar = live.sPerChar > 0 ? live.sPerChar * 0.6 + ratio * 0.4 : ratio;
   }
   live.curChars = 0;
+  live.holdSince = 0;
 
   live.pcmParts = [];
   live.pcmLen = 0;
@@ -1510,6 +1506,7 @@ function resetPlayback() {
   live.justFlushedAt = 0;
   live.played = false;
   live.curChars = 0;
+  live.holdSince = 0;
   live.lastPlayEnd = 0;
   if (live.ctx) live.playCursor = live.ctx.currentTime;
   duck(false);
@@ -1591,6 +1588,7 @@ async function stop(silent) {
   live.textTail = '';
   live.sPerChar = 0;
   live.curChars = 0;
+  live.holdSince = 0;
   live.speechSinceOut = 0;
   live.pending = [];
   live.pendingSince = 0;
@@ -1755,31 +1753,25 @@ if (typeof setInterval === 'function') {
     const secs = live.pcmLen / (live.pcmRate || 24000);
     const idle = live.pcmAt ? now - live.pcmAt : 0;
     const quiet = live.inQuietSince ? now - live.inQuietSince : 0;
-    if (secs >= PCM_MAX) {
+    // 硬條件：時間到就一定播（避免永遠不出聲）
+    const hard =
+      (live.sentBoundary && now - live.sentAt >= FLUSH_MAX_WAIT) ||
+      (idle >= (textClosed(live.textTail) ? IDLE_FLUSH : OPEN_IDLE) && secs >= 0.25);
+    // 軟條件：看起來講完了。逐字稿常比譯音先到，所以先確認音訊夠整句
+    const soft =
+      (quiet >= SPEAKER_QUIET && idle >= SPEAKER_IDLE && secs >= 0.2 && textClosed(live.textTail)) ||
+      (live.sentBoundary && idle >= FLUSH_QUIET && secs >= 0.2);
+
+    if (secs >= PCM_MAX || hard) {
       // 講不停又收不到任何結束訊號 → 保底切一次，避免延遲無限長大
       flushPcm();
-    } else if (
-      quiet >= SPEAKER_QUIET &&
-      idle >= SPEAKER_IDLE &&
-      secs >= 0.2 &&
-      textClosed(live.textTail) &&
-      (audioEnough(secs) || idle >= 5000)
-    ) {
-      // 講者停了、譯音也收乾淨，而且逐字稿已經到句尾 → 這句講完了
-      // （逐字稿常常比譯音先到，音訊明顯不足整句時多等 5 秒，避免切掉句尾幾個字）
-      flushPcm();
-    } else if (live.sentBoundary && idle >= FLUSH_QUIET && secs >= 0.2 && audioEnough(secs)) {
-      // 逐字稿標了句尾，且音訊真的靜止了 → 這句到齊
-      flushPcm();
-    } else if (live.sentBoundary && now - live.sentAt >= FLUSH_MAX_WAIT) {
-      // 有標點但音訊一直零碎滴進來（模型回傳慢），等夠久就播，不再無限等
-      flushPcm();
-    } else if (idle >= (textClosed(live.textTail) ? IDLE_FLUSH : OPEN_IDLE) && secs >= 0.25) {
-      // 完全沒有句尾標點、講者也一直在講（音樂或語音持續）→ 放很久才當成一句結束
-      // 設得比句子長度長很多，寧可慢也不要切斷句子。
-      // 逐字稿還停在逗號（模型卡在半句）時用更長的 OPEN_IDLE：
-      // 這種「中途停 6 秒」很常見，太早播就會變成「幾個字 → 空白 → 幾個字」。
-      flushPcm();
+    } else if (soft) {
+      // 音訊明顯少於這句字數該有的長度時多等一下（最多 HOLD_MAX，免得把下一句開頭吸進來）
+      if (audioEnough(secs) || (live.holdSince && now - live.holdSince >= HOLD_MAX)) {
+        flushPcm();
+      } else if (!live.holdSince) {
+        live.holdSince = now;
+      }
     }
   }, 120);
 }

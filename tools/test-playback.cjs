@@ -383,27 +383,27 @@ const overlaps = () =>
   const d9 = scheduled[before9] ? scheduled[before9].dur : 0;
   ok(d9 > 0.5 && d9 < 0.7, '跨過 7 秒卡頓的音訊接成一段（實際 ' + d9.toFixed(3) + 's）');
 
-  /* 情境十：逐字稿比譯音先到（「他站」唸完、停一下，「起來」跟下一句一起唸）
-     → 逐字稿已到句尾，但手上音訊明顯不足這句該有的長度時，先不要播 */
+  /* 情境十：逐字稿比譯音先到（「他站」先唸、「起來」跟下一句一起）→ 音訊不足時多等一下再播 */
   const before10 = scheduled.length;
   T.live.sPerChar = 0.2; // 一句 5 個字大約要 1.0 秒譯音
   T.live.curChars = 0;
-  feedText('他站起來。'); // 5 個字，但音訊只到了「他站」
+  T.live.holdSince = 0;
+  feedText('他站起來。'); // 逐字稿 5 個字，音訊只到了「他站」0.4 秒
   for (let i = 0; i < 4; i++) {
     feedAudio();
     feedInput(0.3);
     advance(100);
   }
-  for (let i = 0; i < 8; i++) {
-    feedInput(0); // 講者停 0.8 秒
+  for (let i = 0; i < 5; i++) {
+    feedInput(0); // 講者停 0.5 秒（小於 HOLD_MAX 0.8 秒）
     advance(100);
   }
-  ok(scheduled.length === before10, '逐字稿先到、音訊只有一半時不會先播（避免斷字）');
+  ok(scheduled.length === before10, '音訊只有一半時先多等，不會提早播（避免斷字）');
   for (let i = 0; i < 4; i++) {
     feedAudio(); // 「起來」的音訊補上
     advance(100);
   }
-  advance(800);
+  advance(500);
   ok(scheduled.length === before10 + 1, '音訊補齊後整句只播一段');
   const d10 = scheduled[before10] ? scheduled[before10].dur : 0;
   ok(d10 > 0.75 && d10 < 0.9, '整句 0.8 秒一次播完（實際 ' + d10.toFixed(3) + 's）');
