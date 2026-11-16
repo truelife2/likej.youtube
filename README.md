@@ -266,6 +266,7 @@ node tools/make-icons.cjs
 node test-selftest.cjs    # 音訊降採樣、base64、setup 結構、音量、語言代碼
 node test-flow.cjs        # 用假 WebSocket 走完整連線流程
 node test-segment.cjs     # 用真實影片音訊驗證切句品質
+node tools/test-playback.cjs  # 配音排程：一句不能被切成好幾段、音訊不丟
 ```
 
 ### 更新版本
