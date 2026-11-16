@@ -276,3 +276,5 @@ node tools/test-playback.cjs  # 配音排程：一句不能被切成好幾段、
 ### 更新版本
 
 每次更新檔案後：`chrome://extensions` → 這支擴充功能的 **重新載入** → 關掉 popup 再重開。版本號在 `chrome://extensions` 的卡片上（或 `manifest.json` 裡）。
+
+每一版改了什麼、為什麼改，記在 [`CHANGELOG.md`](CHANGELOG.md)。
