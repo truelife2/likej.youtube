@@ -43,6 +43,9 @@ const live = {
   pcmAt: 0,
   sentBoundary: false,
   sentAt: 0,
+  played: false,
+  justFlushedAt: 0,
+  inQuietSince: 0,
 
   // 連線
   ws: null,
@@ -598,6 +601,9 @@ function onAudioChunk(buf) {
   const peak = chunkPeak(buf);
   live.level = live.level * 0.7 + peak * 0.3;
   if (peak > live.peakHold) live.peakHold = peak;
+  // 講者是否正在說話（給配音排程用：講者停下來 = 這句講完了，可以播）
+  if (peak > 0.02) live.inQuietSince = 0;
+  else if (!live.inQuietSince) live.inQuietSince = Date.now();
   // 本機 Whisper 模式：不連 Gemini Live，走本機 ASR + 文字翻譯
   if (live.engine === 'local') {
     if (live.running) localOnChunk(buf);
@@ -1187,16 +1193,22 @@ function playPcm(b64, mimeType) {
    逐塊排程會在每個接縫留下缺口（聽起來就是「幾個字、停一下」），
    所以先把音塊併起來，等「一個句子」的譯音都到齊，再用一個 AudioBuffer 播出。
    一句只播一次的觸發點（依優先序）：
-   ① 譯文逐字稿出現句尾標點（。！？!?）且音訊已停止進來 250ms → 這句真的到齊了
-   ② 出現句尾標點後最多再等 1200ms（音訊一直零碎滴進來時，避免無限等下去）
-   ③ 音訊本身停下來超過 3 秒（逐字稿完全沒給標點時的保底）
-   ④ 累積超過 PCM_MAX 秒的保底，避免延遲無限長大
+   ① 講者已經停頓 0.6 秒，且譯音也靜止 0.3 秒 → 這句一定講完了（最可靠）
+   ② 譯文逐字稿出現句尾標點（。！？!?）且音訊已靜止 0.4 秒 → 這句到齊了
+   ③ 有句尾標點但音訊一直零碎滴進來 → 最多再等 4 秒
+   ④ 音訊本身停下來超過 6 秒（沒有標點、也沒有講者停頓訊號時的保底）
+   ⑤ 累積超過 PCM_MAX 秒的保底，避免延遲無限長大
    播放中絕不因為「快斷炊」提前切句，否則一句會被切成好幾段。 */
 const PCM_LEAD = 0.6; // 開播前先緩衝（吸收網路抖動，避免一開口就斷）
+const PCM_RELEAD = 0.12; // 已經在播、只是暫時沒料時，重新接上去只需要很短的前置量
+const TRIM_HEAD = 0.06; // 每句開頭保留這麼多（更前面的靜音剪掉）
+const TRIM_TAIL = 0.1; // 每句結尾保留這麼多（模型常在句尾附一小段靜音）
 const PCM_MAX = 8.0; // 等不到句子結尾時的保底（正常句子遠短於此，等同不切句）
-const FLUSH_QUIET = 250; // 出現句尾標點後，音訊要靜止這麼久才算這句到齊
-const FLUSH_MAX_WAIT = 1200; // 出現句尾標點後最多再等這麼久（音訊零碎滴進來時的保險）
-const IDLE_FLUSH = 3000; // 完全沒有句尾標點時，音訊靜止這麼久才當成一句結束
+const FLUSH_QUIET = 400; // 出現句尾標點後，音訊要靜止這麼久才算這句到齊
+const FLUSH_MAX_WAIT = 4000; // 出現句尾標點後最多再等這麼久（音訊零碎滴進來時的保險）
+const SPEAKER_QUIET = 600; // 講者安靜這麼久 → 這句講完了
+const SPEAKER_IDLE = 300; // 講者已停，譯音再靜止這麼久就直接播
+const IDLE_FLUSH = 6000; // 完全沒有任何訊號時，音訊靜止這麼久才當成一句結束
 
 // 譯文出現句尾標點 → 這句的譯音應該都到了，等音訊收尾就整段播
 function markSentenceEnd(text) {
@@ -1298,6 +1310,38 @@ function smoothGaps(f32, rate) {
   return out;
 }
 
+// 模型回傳的每一句譯音，前後常各帶一小段靜音。這些靜音會被一起播出來，
+// 接在下一句之前就變成「字和字之間空一段」。這裡把句首／句尾的靜音剪掉，
+// 只保留很短的自然尾音（剪太多會吃掉氣音與收尾的子音）。
+function trimSilence(f32, rate) {
+  const n = f32.length;
+  if (!n || !rate) return f32;
+  const win = Math.max(1, Math.round(rate * 0.01));
+  const blocks = Math.floor(n / win);
+  if (blocks < 4) return f32;
+
+  let first = -1;
+  let last = -1;
+  for (let b = 0; b < blocks; b++) {
+    let peak = 0;
+    const s = b * win;
+    for (let i = s; i < s + win; i++) {
+      const v = f32[i] < 0 ? -f32[i] : f32[i];
+      if (v > peak) peak = v;
+    }
+    if (peak > 0.012) {
+      if (first < 0) first = b;
+      last = b;
+    }
+  }
+  if (first < 0) return f32; // 整段都很小聲：不動，交給上層判斷
+
+  const start = Math.max(0, Math.round(first * win - TRIM_HEAD * rate));
+  const end = Math.min(n, Math.round((last + 1) * win + TRIM_TAIL * rate));
+  if (start <= 0 && end >= n) return f32;
+  return f32.subarray(start, end);
+}
+
 function flushPcm() {
   const ctx = live.ctx;
   if (!ctx || !live.pcmParts.length) return;
@@ -1323,7 +1367,7 @@ function flushPcm() {
   }
 
   const outRate = ctx.sampleRate || rate;
-  const pcm = resampleTo(smoothGaps(joined, rate), rate, outRate);
+  const pcm = resampleTo(smoothGaps(trimSilence(joined, rate), rate), rate, outRate);
 
   let buffer;
   try {
@@ -1338,6 +1382,7 @@ function flushPcm() {
   live.pcmLen = 0;
   live.sentBoundary = false;
   live.sentAt = 0;
+  live.justFlushedAt = Date.now();
 
   const node = ctx.createBufferSource();
   node.buffer = buffer;
@@ -1351,7 +1396,11 @@ function flushPcm() {
   const now = ctx.currentTime;
   // 只在「有空隙」時補上現在時間；絕不往回跳。
   // 往回跳會讓新的一段跟還在播放的舊段同時發聲（聽起來像一堆人一起唸）。
-  if (live.playCursor < now + 0.02) live.playCursor = now + PCM_LEAD;
+  // 第一次開播留 0.6 秒緩衝；之後接續只要 0.12 秒，否則每次接句都會多出半秒空白。
+  if (live.playCursor < now + 0.02) {
+    live.playCursor = now + (live.played ? PCM_RELEAD : PCM_LEAD);
+  }
+  live.played = true;
 
   const startAt = live.playCursor;
   try {
@@ -1396,6 +1445,8 @@ function resetPlayback() {
   live.pcmAt = 0;
   live.sentBoundary = false;
   live.sentAt = 0;
+  live.justFlushedAt = 0;
+  live.played = false;
   if (live.ctx) live.playCursor = live.ctx.currentTime;
   duck(false);
 }
@@ -1472,6 +1523,7 @@ async function stop(silent) {
   live.behind = 0;
   live.level = 0;
   live.peakHold = 0;
+  live.inQuietSince = 0;
   live.speechSinceOut = 0;
   live.pending = [];
   live.pendingSince = 0;
@@ -1635,13 +1687,22 @@ if (typeof setInterval === 'function') {
     const now = Date.now();
     const secs = live.pcmLen / (live.pcmRate || 24000);
     const idle = live.pcmAt ? now - live.pcmAt : 0;
+    const quiet = live.inQuietSince ? now - live.inQuietSince : 0;
     if (secs >= PCM_MAX) {
+      // 講不停又收不到任何結束訊號 → 保底切一次，避免延遲無限長大
       flushPcm();
-    } else if (live.sentBoundary && (idle >= FLUSH_QUIET || now - live.sentAt >= FLUSH_MAX_WAIT)) {
-      // 逐字稿已標句尾，且（音訊收乾淨了 或 等太久了）→ 這句可以整段播
+    } else if (quiet >= SPEAKER_QUIET && idle >= SPEAKER_IDLE && secs >= 0.2) {
+      // 講者已經停下來，譯音也收乾淨了 → 這句一定講完了（最可靠，不會切斷句中）
+      flushPcm();
+    } else if (live.sentBoundary && idle >= FLUSH_QUIET && secs >= 0.2) {
+      // 逐字稿標了句尾，且音訊真的靜止了 → 這句到齊
+      flushPcm();
+    } else if (live.sentBoundary && now - live.sentAt >= FLUSH_MAX_WAIT) {
+      // 有標點但音訊一直零碎滴進來（模型回傳慢），等夠久就播，不再無限等
       flushPcm();
     } else if (idle >= IDLE_FLUSH && secs >= 0.25) {
-      // 完全沒有句尾標點（模型沒標點、逐字稿延遲），音訊靜止 3 秒才當成一句結束
+      // 完全沒有句尾標點、講者也一直在講（音樂或語音持續）→ 放很久才當成一句結束
+      // 設得比句子長度長很多，寧可慢也不要切斷句子
       flushPcm();
     }
   }, 120);
