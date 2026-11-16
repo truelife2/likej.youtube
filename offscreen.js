@@ -41,8 +41,8 @@ const live = {
   pcmLen: 0,
   pcmRate: 24000,
   pcmAt: 0,
-  flushTimer: 0,
   sentBoundary: false,
+  sentAt: 0,
 
   // 連線
   ws: null,
@@ -1186,24 +1186,23 @@ function playPcm(b64, mimeType) {
 /* 連續串流模型一次只回幾十毫秒的音訊。
    逐塊排程會在每個接縫留下缺口（聽起來就是「幾個字、停一下」），
    所以先把音塊併起來，等「一個句子」的譯音都到齊，再用一個 AudioBuffer 播出。
-   一句只播一次的三個觸發點：
-   ① 譯文逐字稿出現句尾標點（。！？!?）後再等 FLUSH_DEBOUNCE 毫秒 → 最準
-   ② 音訊本身停下來超過 800ms（模型這句講完了，逐字稿還沒標點時靠這個）
-   ③ 累積超過 PCM_MAX 秒的保底，避免延遲無限長大
+   一句只播一次的觸發點（依優先序）：
+   ① 譯文逐字稿出現句尾標點（。！？!?）且音訊已停止進來 250ms → 這句真的到齊了
+   ② 出現句尾標點後最多再等 1200ms（音訊一直零碎滴進來時，避免無限等下去）
+   ③ 音訊本身停下來超過 3 秒（逐字稿完全沒給標點時的保底）
+   ④ 累積超過 PCM_MAX 秒的保底，避免延遲無限長大
    播放中絕不因為「快斷炊」提前切句，否則一句會被切成好幾段。 */
 const PCM_LEAD = 0.6; // 開播前先緩衝（吸收網路抖動，避免一開口就斷）
 const PCM_MAX = 8.0; // 等不到句子結尾時的保底（正常句子遠短於此，等同不切句）
-const FLUSH_DEBOUNCE = 400; // 看到句尾標點後再等 400ms，讓句尾（含數字）的音訊到齊
+const FLUSH_QUIET = 250; // 出現句尾標點後，音訊要靜止這麼久才算這句到齊
+const FLUSH_MAX_WAIT = 1200; // 出現句尾標點後最多再等這麼久（音訊零碎滴進來時的保險）
+const IDLE_FLUSH = 3000; // 完全沒有句尾標點時，音訊靜止這麼久才當成一句結束
 
-// 譯文出現句尾標點 → 這句的譯音應該都到了，可以整段播
+// 譯文出現句尾標點 → 這句的譯音應該都到了，等音訊收尾就整段播
 function markSentenceEnd(text) {
   if (!/[。！？!?]["'」』）)]*\s*$/.test(String(text || ''))) return;
+  if (!live.sentBoundary) live.sentAt = Date.now();
   live.sentBoundary = true;
-  if (live.flushTimer) clearTimeout(live.flushTimer);
-  live.flushTimer = setTimeout(() => {
-    live.flushTimer = 0;
-    if (live.sentBoundary) flushPcm();
-  }, FLUSH_DEBOUNCE);
 }
 
 function queuePcm(f32, rate) {
@@ -1338,10 +1337,7 @@ function flushPcm() {
   live.pcmParts = [];
   live.pcmLen = 0;
   live.sentBoundary = false;
-  if (live.flushTimer) {
-    clearTimeout(live.flushTimer);
-    live.flushTimer = 0;
-  }
+  live.sentAt = 0;
 
   const node = ctx.createBufferSource();
   node.buffer = buffer;
@@ -1399,10 +1395,7 @@ function resetPlayback() {
   live.pcmLen = 0;
   live.pcmAt = 0;
   live.sentBoundary = false;
-  if (live.flushTimer) {
-    clearTimeout(live.flushTimer);
-    live.flushTimer = 0;
-  }
+  live.sentAt = 0;
   if (live.ctx) live.playCursor = live.ctx.currentTime;
   duck(false);
 }
@@ -1635,13 +1628,21 @@ if (typeof setInterval === 'function') {
     emitStats(Date.now());
   }, 2000);
 
-  // 每 120ms 檢查一次：只在句子超過保底上限時才播出。
-  // 句尾的交給 markSentenceEnd() 的 debounce → 一句只播一次，句中不會被切開。
+  // 每 120ms 檢查一次：一句話的譯音到齊了就整段播，絕不中途切句。
   setInterval(() => {
     if (!live.running || !live.pcmLen) return;
     if (!live.ctx) return;
+    const now = Date.now();
     const secs = live.pcmLen / (live.pcmRate || 24000);
-    const idle = live.pcmAt ? Date.now() - live.pcmAt : 0;
-    if (secs >= PCM_MAX || (idle >= 800 && secs >= 0.25)) flushPcm();
+    const idle = live.pcmAt ? now - live.pcmAt : 0;
+    if (secs >= PCM_MAX) {
+      flushPcm();
+    } else if (live.sentBoundary && (idle >= FLUSH_QUIET || now - live.sentAt >= FLUSH_MAX_WAIT)) {
+      // 逐字稿已標句尾，且（音訊收乾淨了 或 等太久了）→ 這句可以整段播
+      flushPcm();
+    } else if (idle >= IDLE_FLUSH && secs >= 0.25) {
+      // 完全沒有句尾標點（模型沒標點、逐字稿延遲），音訊靜止 3 秒才當成一句結束
+      flushPcm();
+    }
   }, 120);
 }
