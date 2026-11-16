@@ -602,7 +602,9 @@ function onAudioChunk(buf) {
   live.level = live.level * 0.7 + peak * 0.3;
   if (peak > live.peakHold) live.peakHold = peak;
   // 講者是否正在說話（給配音排程用：講者停下來 = 這句講完了，可以播）
-  if (peak > 0.02) live.inQuietSince = 0;
+  // 這是直接看「擷取到的波形」，與語音辨識、模型回傳的延遲無關（每 100ms 就有一塊）。
+  // 門檻刻意壓低，寧可把輕聲說話當成「還在講」，也不要誤判成停頓而把句子切斷。
+  if (peak > SPK_PEAK) live.inQuietSince = 0;
   else if (!live.inQuietSince) live.inQuietSince = Date.now();
   // 本機 Whisper 模式：不連 Gemini Live，走本機 ASR + 文字翻譯
   if (live.engine === 'local') {
@@ -1206,8 +1208,9 @@ const TRIM_TAIL = 0.1; // 每句結尾保留這麼多（模型常在句尾附一
 const PCM_MAX = 8.0; // 等不到句子結尾時的保底（正常句子遠短於此，等同不切句）
 const FLUSH_QUIET = 400; // 出現句尾標點後，音訊要靜止這麼久才算這句到齊
 const FLUSH_MAX_WAIT = 4000; // 出現句尾標點後最多再等這麼久（音訊零碎滴進來時的保險）
-const SPEAKER_QUIET = 600; // 講者安靜這麼久 → 這句講完了
+const SPEAKER_QUIET = 700; // 講者安靜這麼久 → 這句講完了
 const SPEAKER_IDLE = 300; // 講者已停，譯音再靜止這麼久就直接播
+const SPK_PEAK = 0.012; // 「有出聲」的峰值門檻（比 0.02 更低，避免把輕聲漏掉）
 const IDLE_FLUSH = 6000; // 完全沒有任何訊號時，音訊靜止這麼久才當成一句結束
 
 // 譯文出現句尾標點 → 這句的譯音應該都到了，等音訊收尾就整段播

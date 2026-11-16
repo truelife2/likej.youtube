@@ -298,11 +298,16 @@ const overlaps = () =>
     advance(100);
   }
   ok(scheduled.length === before6, '講者還在講時，音訊 300ms 的空檔不會被當成句尾');
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 4; i++) {
     feedInput(0);
     advance(100);
   }
-  ok(scheduled.length === before6 + 1, '講者安靜 600ms 後就播（不用等 6 秒或標點）');
+  ok(scheduled.length === before6, '講者只安靜 0.4 秒（還沒到 0.7 秒）仍不播');
+  for (let i = 0; i < 6; i++) {
+    feedInput(0);
+    advance(100);
+  }
+  ok(scheduled.length === before6 + 1, '講者安靜 0.7 秒後就播（不用等 6 秒或標點）');
   const d6 = scheduled[before6] ? scheduled[before6].dur : 0;
   ok(d6 > 0.2 && d6 < 0.4, '第六段長度 ≈ 0.3 秒（實際 ' + d6.toFixed(3) + 's）');
 
