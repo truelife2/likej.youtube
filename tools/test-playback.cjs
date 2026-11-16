@@ -340,6 +340,7 @@ const overlaps = () =>
 
   /* 情境八：逐字稿還是逗號（句子沒講完）→ 講者停頓也不播，等後半段一起播 */
   const before8 = scheduled.length;
+  T.live.sPerChar = 0; // 這個情境的音訊/字數比例是人造的，先關掉「字數估長度」防護
   feedText('如果我不，');
   for (let i = 0; i < 3; i++) {
     feedAudio();
@@ -364,6 +365,7 @@ const overlaps = () =>
   /* 情境九：逐字稿卡在半句、模型音訊也停 7 秒（「就…（停 6.4 秒）…是說」）
      → 逐字稿還沒到句尾時，不能因為超過 IDLE_FLUSH(6s) 就把同一句切成兩段 */
   const before9 = scheduled.length;
+  T.live.sPerChar = 0; // 同上：這段是合成的音訊長度
   feedText('上，就');
   for (let i = 0; i < 3; i++) {
     feedAudio();
@@ -381,6 +383,31 @@ const overlaps = () =>
   const d9 = scheduled[before9] ? scheduled[before9].dur : 0;
   ok(d9 > 0.5 && d9 < 0.7, '跨過 7 秒卡頓的音訊接成一段（實際 ' + d9.toFixed(3) + 's）');
 
+  /* 情境十：逐字稿比譯音先到（「他站」唸完、停一下，「起來」跟下一句一起唸）
+     → 逐字稿已到句尾，但手上音訊明顯不足這句該有的長度時，先不要播 */
+  const before10 = scheduled.length;
+  T.live.sPerChar = 0.2; // 一句 5 個字大約要 1.0 秒譯音
+  T.live.curChars = 0;
+  feedText('他站起來。'); // 5 個字，但音訊只到了「他站」
+  for (let i = 0; i < 4; i++) {
+    feedAudio();
+    feedInput(0.3);
+    advance(100);
+  }
+  for (let i = 0; i < 8; i++) {
+    feedInput(0); // 講者停 0.8 秒
+    advance(100);
+  }
+  ok(scheduled.length === before10, '逐字稿先到、音訊只有一半時不會先播（避免斷字）');
+  for (let i = 0; i < 4; i++) {
+    feedAudio(); // 「起來」的音訊補上
+    advance(100);
+  }
+  advance(800);
+  ok(scheduled.length === before10 + 1, '音訊補齊後整句只播一段');
+  const d10 = scheduled[before10] ? scheduled[before10].dur : 0;
+  ok(d10 > 0.75 && d10 < 0.9, '整句 0.8 秒一次播完（實際 ' + d10.toFixed(3) + 's）');
+
   /* 全域檢查 */
   const segs = events.filter((m) => m && m.event && m.event.kind === 'seg');
   ok(segs.length === scheduled.length, '每段音訊都回報一次分段事件：' + segs.length + ' / ' + scheduled.length);
@@ -391,7 +418,7 @@ const overlaps = () =>
     '分段事件會帶「來源是否安靜」的資訊（quietMs）'
   );
   ok(!overlaps(), '排程沒有重疊（不會兩段聲音同時唸）');
-  const expected = 0.8 + 1.0 + 1.5 + 15.0 + 1.1 + 0.3 + 0.86 + 0.6 + 0.6;
+  const expected = 0.8 + 1.0 + 1.5 + 15.0 + 1.1 + 0.3 + 0.86 + 0.6 + 0.6 + 0.8;
   ok(
     Math.abs(totalDur() - expected) < 0.2,
     '播放總長符合預期（剪掉的只有句尾靜音）：' + totalDur().toFixed(2) + 's / ' + expected.toFixed(2) + 's'
