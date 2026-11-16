@@ -26,6 +26,7 @@ const DEFAULTS = {
   vadSensitivity: 5,
   showSource: true,
   subtitleSize: 26,
+  showSeg: true,
 };
 
 // 舊版預設模型（native-audio 對話模型）拿來做翻譯效果很差，載入時自動升級一次
@@ -129,6 +130,7 @@ async function loadConfig() {
   $('outputVolume').value = String(Math.round((config.outputVolume ?? 1) * 100));
   $('duckLevel').value = String(config.duckLevel ?? 0.12);
   $('autoPause').checked = config.autoPause !== false;
+  $('showSeg').checked = config.showSeg !== false;
   $('pauseAfterSec').value = String(config.pauseAfterSec ?? 45);
   $('resumeSec').value = String(config.resumeSec ?? 10);
   $('vad').value = config.vad === 'auto' ? 'auto' : 'client';
@@ -691,6 +693,11 @@ async function fetchModels(btnId) {
     syncPauseHint();
     pushConfig();
     return config.autoPause;
+  });
+  bindField('showSeg', 'showSeg', () => {
+    config.showSeg = $('showSeg').checked;
+    pushConfig();
+    return config.showSeg;
   });
   bindField('pauseAfterSec', 'pauseAfterSec', (v) => {
     config.pauseAfterSec = Number(v);

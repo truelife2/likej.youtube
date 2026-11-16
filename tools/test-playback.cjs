@@ -23,6 +23,7 @@ const tick = (ms) => {
 
 const scheduled = []; // { start, dur }
 const worklets = [];
+const events = [];
 let gainSeq = 0;
 
 class FakeCtx {
@@ -131,7 +132,10 @@ const sandbox = {
   chrome: {
     runtime: {
       getURL: (p) => 'chrome-extension://x/' + p,
-      sendMessage: async () => ({}),
+      sendMessage: async (m) => {
+        events.push(m);
+        return {};
+      },
       onMessage: { addListener: () => {} },
     },
   },
@@ -312,6 +316,10 @@ const overlaps = () =>
   ok(d6 > 0.2 && d6 < 0.4, '第六段長度 ≈ 0.3 秒（實際 ' + d6.toFixed(3) + 's）');
 
   /* 全域檢查 */
+  const segs = events.filter((m) => m && m.event && m.event.kind === 'seg');
+  ok(segs.length === scheduled.length, '每段音訊都回報一次分段事件：' + segs.length + ' / ' + scheduled.length);
+  const maxGap = segs.reduce((a, s) => Math.max(a, s.event.gapMs || 0), 0);
+  ok(maxGap >= 1000, '分段事件會帶「前面停了多久」（最大 ' + maxGap + 'ms）');
   ok(!overlaps(), '排程沒有重疊（不會兩段聲音同時唸）');
   const expected = 0.8 + 1.0 + 1.5 + 9.0 + 1.1 + 0.3;
   ok(

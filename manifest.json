@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube 即時口譯 (Gemini Live)",
-  "version": "1.12.6",
+  "version": "1.13.0",
   "description": "擷取 YouTube 直播/影片音訊，即時翻譯成語音配音與字幕；也可用本機 Whisper 辨識 + Gemini 文字翻譯。",
   "minimum_chrome_version": "116",
   "permissions": [

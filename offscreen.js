@@ -46,6 +46,7 @@ const live = {
   played: false,
   justFlushedAt: 0,
   inQuietSince: 0,
+  lastPlayEnd: 0,
 
   // 連線
   ws: null,
@@ -1411,7 +1412,12 @@ function flushPcm() {
   } catch (_) {
     return;
   }
-  live.playCursor = startAt + buffer.duration;
+  const dur = buffer.duration;
+  // 讓字幕可以標出「每一段譯音從哪裡開始、前面隔了多久」
+  const gapMs = live.lastPlayEnd ? Math.round((startAt - live.lastPlayEnd) * 1000) : 0;
+  live.lastPlayEnd = startAt + dur;
+  live.playCursor = live.lastPlayEnd;
+  emit({ kind: 'seg', dur: Math.round(dur * 1000) / 1000, gapMs: Math.max(0, gapMs) });
   // 翻譯音量拉到 0 時不要壓低原音，否則會變成「沒配音又很小聲」
   if (dubLevel(live.config) > 0) duck(true);
 }
@@ -1450,6 +1456,7 @@ function resetPlayback() {
   live.sentAt = 0;
   live.justFlushedAt = 0;
   live.played = false;
+  live.lastPlayEnd = 0;
   if (live.ctx) live.playCursor = live.ctx.currentTime;
   duck(false);
 }

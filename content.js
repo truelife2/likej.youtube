@@ -80,6 +80,7 @@
     }
     /* 本機模式每句輪替顏色，看不出新句從哪開始 */
     .dst .alt { color: #7fd0ff; }
+    .dst .seg { color: #9aa3b2; font-size: 0.72em; padding: 0 3px; opacity: 0.9; }
 
     .notice {
       margin-top: 6px;
@@ -171,6 +172,8 @@
   let fadeTimer = null;
   let outTurnDone = false;
   let outAlt = false;
+  // 在字幕上標示配音的音訊分段（│ = 換段、⏸0.8s = 這句前面停多久），診斷用
+  let showSeg = false;
   // 即時翻譯模型是連續串流：字幕不要每到一段就清空，改用句子邊界往上捲
   let continuous = false;
   let appendTurns = false;
@@ -430,9 +433,21 @@
     if (!text) return;
     const parts = rows.output.parts;
     const last = parts[parts.length - 1];
-    if (last && last.alt === !!alt) last.t += text;
+    if (last && !last.mark && last.alt === !!alt) last.t += text;
     else parts.push({ t: text, alt: !!alt });
     rows.output.text = parts.map((p) => p.t).join('').replace(/^\s+/, '');
+    trimOutput();
+    scheduleRender();
+  }
+
+  // 音訊分段記號：插在字幕目前的位置，用來對照「這段聲音從哪裡開始」
+  function outMark(gapMs, dur) {
+    const gap = Math.max(0, Number(gapMs) || 0);
+    const txt = gap >= 300 ? '⏸' + (gap / 1000).toFixed(1) + 's ' : '│';
+    const title =
+      '音訊分段：' + (Number(dur) || 0).toFixed(1) + 's' + (gap >= 300 ? '，前面停 ' + (gap / 1000).toFixed(1) + 's' : '');
+    rows.output.parts.push({ t: txt, alt: false, mark: true, title });
+    rows.output.text = rows.output.parts.map((p) => p.t).join('').replace(/^\s+/, '');
     trimOutput();
     scheduleRender();
   }
@@ -483,13 +498,19 @@
       if (!els) return;
       if (els.src.textContent !== rows.input.text) els.src.textContent = rows.input.text;
       // 譯文用 span 分段上色，靠 key 比對決定要不要重建
-      const key = rows.output.parts.map((p) => (p.alt ? '1' : '0') + p.t).join('\u0001');
+      const key = rows.output.parts.map((p) => (p.mark ? '2' : p.alt ? '1' : '0') + p.t).join('\u0001');
       if (els.dstKey !== key) {
         els.dstKey = key;
         els.dst.textContent = '';
         for (const p of rows.output.parts) {
           if (!p.t) continue;
-          if (p.alt) {
+          if (p.mark) {
+            const s = document.createElement('span');
+            s.className = 'seg';
+            s.textContent = p.t;
+            if (p.title) s.title = p.title;
+            els.dst.appendChild(s);
+          } else if (p.alt) {
             const s = document.createElement('span');
             s.className = 'alt';
             s.textContent = p.t;
@@ -568,6 +589,7 @@
       case 'config': {
         const c = ev.config || {};
         if (typeof c.showSource === 'boolean') showSource = c.showSource;
+        if (typeof c.showSeg === 'boolean') showSeg = c.showSeg;
         if (typeof c.subtitleSize === 'number') fontSize = c.subtitleSize;
         if (typeof c.autoPause === 'boolean') autoPause = c.autoPause;
         if (Number(c.pauseAfterSec) > 0) pauseAfterSec = Number(c.pauseAfterSec);
@@ -619,6 +641,11 @@
       case 'turn':
         outTurnDone = true;
         touch();
+        break;
+      case 'seg':
+        if (!showSeg) break;
+        ensureUI();
+        outMark(ev.gapMs, ev.dur);
         break;
       case 'speech':
         ensureUI();
