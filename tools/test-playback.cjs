@@ -338,13 +338,40 @@ const overlaps = () =>
   const d7 = scheduled[before7] ? scheduled[before7].dur : 0;
   ok(d7 > 0.7 && d7 < 1.0, '3 秒空白被壓成 0.06 秒（實際 ' + d7.toFixed(3) + 's）');
 
+  /* 情境八：逐字稿還是逗號（句子沒講完）→ 講者停頓也不播，等後半段一起播 */
+  const before8 = scheduled.length;
+  feedText('如果我不，');
+  for (let i = 0; i < 3; i++) {
+    feedAudio();
+    feedInput(0.3);
+    advance(100);
+  }
+  for (let i = 0; i < 8; i++) {
+    feedInput(0);
+    advance(100); // 講者停 0.8 秒
+  }
+  ok(scheduled.length === before8, '逐字稿還是逗號時，講者停頓不會把句子切斷');
+  for (let i = 0; i < 3; i++) {
+    feedAudio();
+    advance(100); // 後半段晚一點才補送
+  }
+  feedText('走旁邊，那裡有一顆。');
+  advance(800);
+  ok(scheduled.length === before8 + 1, '後半段到了之後，整句只播一段');
+  const d8 = scheduled[before8] ? scheduled[before8].dur : 0;
+  ok(d8 > 0.5 && d8 < 0.75, '兩次送來的音訊被接成一段（實際 ' + d8.toFixed(3) + 's）');
+
   /* 全域檢查 */
   const segs = events.filter((m) => m && m.event && m.event.kind === 'seg');
   ok(segs.length === scheduled.length, '每段音訊都回報一次分段事件：' + segs.length + ' / ' + scheduled.length);
   const maxGap = segs.reduce((a, s) => Math.max(a, s.event.gapMs || 0), 0);
   ok(maxGap >= 1000, '分段事件會帶「前面停了多久」（最大 ' + maxGap + 'ms）');
+  ok(
+    segs.every((s) => typeof s.event.quietMs === 'number'),
+    '分段事件會帶「來源是否安靜」的資訊（quietMs）'
+  );
   ok(!overlaps(), '排程沒有重疊（不會兩段聲音同時唸）');
-  const expected = 0.8 + 1.0 + 1.5 + 9.0 + 1.1 + 0.3 + 0.86;
+  const expected = 0.8 + 1.0 + 1.5 + 9.0 + 1.1 + 0.3 + 0.86 + 0.6;
   ok(
     Math.abs(totalDur() - expected) < 0.2,
     '播放總長符合預期（剪掉的只有句尾靜音）：' + totalDur().toFixed(2) + 's / ' + expected.toFixed(2) + 's'

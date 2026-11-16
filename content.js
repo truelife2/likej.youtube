@@ -189,6 +189,7 @@
   let lastPauseAt = 0;
   let lastIdleWarn = 0;
   let lastQuietWarn = 0;
+let quietCount = 0;
   let levelPct = 0;
   let speedFixed = false;
   let lastSilenceWarn = 0;
@@ -336,6 +337,7 @@
     latMs = 0;
     rateX = 1;
     levelPct = 0;
+    quietCount = 0;
     lastStatus = 'idle';
     listening = false;
     applyDot();
@@ -441,11 +443,22 @@
   }
 
   // 音訊分段記號：插在字幕目前的位置，用來對照「這段聲音從哪裡開始」
-  function outMark(gapMs, dur) {
+  function outMark(gapMs, dur, quietMs) {
     const gap = Math.max(0, Number(gapMs) || 0);
-    const txt = gap >= 300 ? '⏸' + (gap / 1000).toFixed(1) + 's ' : '│';
+    const quiet = Math.max(0, Number(quietMs) || 0);
+    // 空白期間分頁音訊本身就是安靜的 → 是來源沒有聲音，不是我們晚播
+    const srcQuiet = gap >= 300 && quiet >= gap * 0.6;
+    let txt = '│';
+    if (gap >= 300) {
+      txt = '⏸' + (gap / 1000).toFixed(1) + 's' + (srcQuiet ? '(來源無聲)' : '(譯音慢)') + ' ';
+    }
     const title =
-      '音訊分段：' + (Number(dur) || 0).toFixed(1) + 's' + (gap >= 300 ? '，前面停 ' + (gap / 1000).toFixed(1) + 's' : '');
+      '音訊分段 ' +
+      (Number(dur) || 0).toFixed(1) +
+      's' +
+      (gap >= 300
+        ? '；前面空 ' + (gap / 1000).toFixed(1) + 's（' + (srcQuiet ? '來源音訊也是靜音' : '來源有聲音，是譯音晚到') + '）'
+        : '');
     rows.output.parts.push({ t: txt, alt: false, mark: true, title });
     rows.output.text = rows.output.parts.map((p) => p.t).join('').replace(/^\s+/, '');
     trimOutput();
@@ -645,7 +658,7 @@
       case 'seg':
         if (!showSeg) break;
         ensureUI();
-        outMark(ev.gapMs, ev.dur);
+        outMark(ev.gapMs, ev.dur, ev.quietMs);
         break;
       case 'speech':
         ensureUI();
@@ -698,7 +711,9 @@
         }
         // 有在播但幾乎沒音量：分頁靜音或系統音量太小，VAD 抓不到人聲
         // 峰值 < 3% 才真的是沒聲音（講話時峰值通常 30–90%）
-        if (ev.idle <= 6 && levelPct < 3 && v && !v.paused && Date.now() - lastQuietWarn > 30000) {
+        // 連續兩個統計窗（約 4 秒）都沒聲音才提示，單純換氣或段落間空白不吵人
+        quietCount = levelPct < 3 && v && !v.paused ? quietCount + 1 : 0;
+        if (quietCount >= 2 && Date.now() - lastQuietWarn > 30000) {
           lastQuietWarn = Date.now();
           showNotice('幾乎收不到聲音（峰值 ' + levelPct + '%），檢查分頁是否靜音或系統音量。', 'info');
         }

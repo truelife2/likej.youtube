@@ -47,6 +47,7 @@ const live = {
   justFlushedAt: 0,
   inQuietSince: 0,
   lastPlayEnd: 0,
+  textTail: '',
 
   // 連線
   ws: null,
@@ -1080,6 +1081,7 @@ async function handleServerPayload(data) {
     // 這裡只留下真正的譯文。
     if (!isTranslateModel((live.config || {}).model)) t = stripMeta(t);
     if (t) {
+      live.textTail = t;
       markSentenceEnd(t);
       markOutputText();
       emit({ kind: 'output', delta: t });
@@ -1216,6 +1218,15 @@ const SPK_PEAK = 0.012; // 「有出聲」的峰值門檻（比 0.02 更低，�
 const IDLE_FLUSH = 6000; // 完全沒有任何訊號時，音訊靜止這麼久才當成一句結束
 
 // 譯文出現句尾標點 → 這句的譯音應該都到了，等音訊收尾就整段播
+// 逐字稿是不是已經講到「句子結束」。以逗號或沒有標點結尾，代表句子還在繼續，
+// 這時即使講者停頓也先不要播，否則模型晚一點才補上的後半段會變成另一段，
+// 聽起來就是「講幾個字 → 空白幾秒 → 再講」。
+function textClosed(t) {
+  const s = String(t || '').trim();
+  if (!s) return true; // 沒有逐字稿可參考 → 照常播
+  return /[。！？!?…]["'」』）)]*\s*$/.test(s);
+}
+
 function markSentenceEnd(text) {
   if (!/[。！？!?]["'」』）)]*\s*$/.test(String(text || ''))) return;
   if (!live.sentBoundary) live.sentAt = Date.now();
@@ -1419,9 +1430,10 @@ function flushPcm() {
   const dur = buffer.duration;
   // 讓字幕可以標出「每一段譯音從哪裡開始、前面隔了多久」
   const gapMs = live.lastPlayEnd ? Math.round((startAt - live.lastPlayEnd) * 1000) : 0;
+  const quietMs = live.inQuietSince ? Date.now() - live.inQuietSince : 0;
   live.lastPlayEnd = startAt + dur;
   live.playCursor = live.lastPlayEnd;
-  emit({ kind: 'seg', dur: Math.round(dur * 1000) / 1000, gapMs: Math.max(0, gapMs) });
+  emit({ kind: 'seg', dur: Math.round(dur * 1000) / 1000, gapMs: Math.max(0, gapMs), quietMs });
   // 翻譯音量拉到 0 時不要壓低原音，否則會變成「沒配音又很小聲」
   if (dubLevel(live.config) > 0) duck(true);
 }
@@ -1538,6 +1550,7 @@ async function stop(silent) {
   live.level = 0;
   live.peakHold = 0;
   live.inQuietSince = 0;
+  live.textTail = '';
   live.speechSinceOut = 0;
   live.pending = [];
   live.pendingSince = 0;
@@ -1705,8 +1718,8 @@ if (typeof setInterval === 'function') {
     if (secs >= PCM_MAX) {
       // 講不停又收不到任何結束訊號 → 保底切一次，避免延遲無限長大
       flushPcm();
-    } else if (quiet >= SPEAKER_QUIET && idle >= SPEAKER_IDLE && secs >= 0.2) {
-      // 講者已經停下來，譯音也收乾淨了 → 這句一定講完了（最可靠，不會切斷句中）
+    } else if (quiet >= SPEAKER_QUIET && idle >= SPEAKER_IDLE && secs >= 0.2 && textClosed(live.textTail)) {
+      // 講者停了、譯音也收乾淨，而且逐字稿已經到句尾 → 這句講完了
       flushPcm();
     } else if (live.sentBoundary && idle >= FLUSH_QUIET && secs >= 0.2) {
       // 逐字稿標了句尾，且音訊真的靜止了 → 這句到齊
