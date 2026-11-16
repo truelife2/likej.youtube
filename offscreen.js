@@ -1207,7 +1207,8 @@ const PCM_RELEAD = 0.12; // 已經在播、只是暫時沒料時，重新接上�
 const TRIM_HEAD = 0.06; // 每句開頭保留這麼多（更前面的靜音剪掉）
 const TRIM_TAIL = 0.1; // 每句結尾保留這麼多（模型常在句尾附一小段靜音）
 const PCM_MAX = 8.0; // 等不到句子結尾時的保底（正常句子遠短於此，等同不切句）
-const FLUSH_QUIET = 400; // 出現句尾標點後，音訊要靜止這麼久才算這句到齊
+const FLUSH_QUIET = 700; // 出現句尾標點後，音訊要靜止這麼久才算這句到齊
+// （模型常在句中「停頓一下再繼續」，等久一點就能把那段空白併進同一段，再壓縮掉）
 const FLUSH_MAX_WAIT = 4000; // 出現句尾標點後最多再等這麼久（音訊零碎滴進來時的保險）
 const SPEAKER_QUIET = 700; // 講者安靜這麼久 → 這句講完了
 const SPEAKER_IDLE = 300; // 講者已停，譯音再靜止這麼久就直接播
@@ -1279,8 +1280,8 @@ function smoothGaps(f32, rate) {
     loud[b] = peak > 0.012 ? 1 : 0;
   }
 
-  const minQuiet = Math.max(2, Math.round((0.18 * rate) / win));
-  const keepQuiet = Math.max(1, Math.round((0.05 * rate) / win));
+  const minQuiet = Math.max(2, Math.round((0.15 * rate) / win));
+  const keepQuiet = Math.max(1, Math.round((0.06 * rate) / win));
   const drops = [];
   let removed = 0;
   let i = 0;
@@ -1298,7 +1299,10 @@ function smoothGaps(f32, rate) {
     i = j;
   }
   if (!drops.length) return f32;
-  if (removed > n * 0.4) return f32; // 太誇張就整段照原樣播，避免吃字
+  // 以前這裡是「剪掉超過 40% 就整段照原樣播」，結果模型在句中停 2–3 秒的段落
+  // 會整段保留，聽起來就是「唸幾個字 → 停好幾秒 → 再唸」。
+  // 只要還有 1/4 的音是有聲的就照剪，停頓一律壓成 0.06 秒。
+  if (removed > n * 0.9) return f32;
 
   const out = new Float32Array(n - removed);
   let src = 0;

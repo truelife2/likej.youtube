@@ -244,7 +244,7 @@ const overlaps = () =>
     feedAudio();
     advance(100);
   }
-  advance(300); // 音訊停下來超過 400ms 的靜止門檻
+  advance(800); // 音訊停下來超過 700ms 的靜止門檻
   ok(scheduled.length === before2 + 1, '音訊持續滴流時，句尾標點仍會在等待上限後播一次');
   const d2 = scheduled[before2] ? scheduled[before2].dur : 0;
   ok(d2 > 0.9 && d2 < 1.1, '第二段長度 ≈ 1.0 秒（實際 ' + d2.toFixed(3) + 's）');
@@ -290,7 +290,7 @@ const overlaps = () =>
     advance(100);
   }
   feedText('開始關注天上的徵兆。');
-  advance(500);
+  advance(800);
   ok(scheduled.length === before5 + 1, '含句尾靜音的句子仍然只播一段');
   const d5 = scheduled[before5] ? scheduled[before5].dur : 0;
   ok(d5 > 1.0 && d5 < 1.25, '句尾 0.5 秒靜音被剪掉（1.0s + 0.1s 尾音，實際 ' + d5.toFixed(3) + 's）');
@@ -315,13 +315,36 @@ const overlaps = () =>
   const d6 = scheduled[before6] ? scheduled[before6].dur : 0;
   ok(d6 > 0.2 && d6 < 0.4, '第六段長度 ≈ 0.3 秒（實際 ' + d6.toFixed(3) + 's）');
 
+  /* 情境七：模型音訊裡夾了 3 秒空白（講者仍在講）→ 併成同一段並壓掉空白 */
+  const before7 = scheduled.length;
+  for (let i = 0; i < 4; i++) {
+    feedAudio();
+    feedInput(0.3);
+    advance(100);
+  }
+  for (let i = 0; i < 30; i++) {
+    feedSilentOut(); // 模型回傳的音訊本身夾了 3 秒靜音
+    feedInput(0.3);
+    advance(100);
+  }
+  for (let i = 0; i < 4; i++) {
+    feedAudio();
+    feedInput(0.3);
+    advance(100);
+  }
+  feedText('這句話中間卡了一下。');
+  advance(800);
+  ok(scheduled.length === before7 + 1, '音訊裡夾著 3 秒空白，仍併成同一段（沒有被切開）');
+  const d7 = scheduled[before7] ? scheduled[before7].dur : 0;
+  ok(d7 > 0.7 && d7 < 1.0, '3 秒空白被壓成 0.06 秒（實際 ' + d7.toFixed(3) + 's）');
+
   /* 全域檢查 */
   const segs = events.filter((m) => m && m.event && m.event.kind === 'seg');
   ok(segs.length === scheduled.length, '每段音訊都回報一次分段事件：' + segs.length + ' / ' + scheduled.length);
   const maxGap = segs.reduce((a, s) => Math.max(a, s.event.gapMs || 0), 0);
   ok(maxGap >= 1000, '分段事件會帶「前面停了多久」（最大 ' + maxGap + 'ms）');
   ok(!overlaps(), '排程沒有重疊（不會兩段聲音同時唸）');
-  const expected = 0.8 + 1.0 + 1.5 + 9.0 + 1.1 + 0.3;
+  const expected = 0.8 + 1.0 + 1.5 + 9.0 + 1.1 + 0.3 + 0.86;
   ok(
     Math.abs(totalDur() - expected) < 0.2,
     '播放總長符合預期（剪掉的只有句尾靜音）：' + totalDur().toFixed(2) + 's / ' + expected.toFixed(2) + 's'
