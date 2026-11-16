@@ -262,15 +262,15 @@ const overlaps = () =>
   const d3 = scheduled[before3] ? scheduled[before3].dur : 0;
   ok(d3 > 1.4 && d3 < 1.6, '第三段長度 ≈ 1.5 秒（實際 ' + d3.toFixed(3) + 's）');
 
-  /* 情境四：一直講都不停、沒有標點 → 到 8 秒保底才播，避免延遲無限長大 */
+  /* 情境四：一直講都不停、沒有標點 → 到 14 秒保底才播，避免延遲無限長大 */
   const before4 = scheduled.length;
-  for (let i = 0; i < 90; i++) {
+  for (let i = 0; i < 150; i++) {
     feedAudio();
     advance(100);
   }
-  ok(scheduled.length >= before4 + 1, '連續 9 秒沒有標點時，保底會播（不會永不出聲）');
+  ok(scheduled.length >= before4 + 1, '連續 15 秒沒有標點時，保底會播（不會永不出聲）');
   const first = scheduled[before4] ? scheduled[before4].dur : 0;
-  ok(first > 7.5 && first <= 8.2, '保底切點 ≈ 8 秒（實際 ' + first.toFixed(3) + 's）');
+  ok(first > 13.5 && first <= 14.2, '保底切點 ≈ 14 秒（實際 ' + first.toFixed(3) + 's）');
 
   /* 保底播完後剩下的尾巴，靜止夠久仍會播出（不會被吞掉） */
   const beforeTail = scheduled.length;
@@ -361,6 +361,26 @@ const overlaps = () =>
   const d8 = scheduled[before8] ? scheduled[before8].dur : 0;
   ok(d8 > 0.5 && d8 < 0.75, '兩次送來的音訊被接成一段（實際 ' + d8.toFixed(3) + 's）');
 
+  /* 情境九：逐字稿卡在半句、模型音訊也停 7 秒（「就…（停 6.4 秒）…是說」）
+     → 逐字稿還沒到句尾時，不能因為超過 IDLE_FLUSH(6s) 就把同一句切成兩段 */
+  const before9 = scheduled.length;
+  feedText('上，就');
+  for (let i = 0; i < 3; i++) {
+    feedAudio();
+    advance(100);
+  }
+  advance(7000); // 模型卡住 7 秒，逐字稿仍停在逗號
+  ok(scheduled.length === before9, '逐字稿還在半句時，模型卡 7 秒也不會切段');
+  for (let i = 0; i < 3; i++) {
+    feedAudio();
+    advance(100);
+  }
+  feedText('是說，當教會變得世俗。');
+  advance(800);
+  ok(scheduled.length === before9 + 1, '後半段補上後整句只播一段');
+  const d9 = scheduled[before9] ? scheduled[before9].dur : 0;
+  ok(d9 > 0.5 && d9 < 0.7, '跨過 7 秒卡頓的音訊接成一段（實際 ' + d9.toFixed(3) + 's）');
+
   /* 全域檢查 */
   const segs = events.filter((m) => m && m.event && m.event.kind === 'seg');
   ok(segs.length === scheduled.length, '每段音訊都回報一次分段事件：' + segs.length + ' / ' + scheduled.length);
@@ -371,7 +391,7 @@ const overlaps = () =>
     '分段事件會帶「來源是否安靜」的資訊（quietMs）'
   );
   ok(!overlaps(), '排程沒有重疊（不會兩段聲音同時唸）');
-  const expected = 0.8 + 1.0 + 1.5 + 9.0 + 1.1 + 0.3 + 0.86 + 0.6;
+  const expected = 0.8 + 1.0 + 1.5 + 15.0 + 1.1 + 0.3 + 0.86 + 0.6 + 0.6;
   ok(
     Math.abs(totalDur() - expected) < 0.2,
     '播放總長符合預期（剪掉的只有句尾靜音）：' + totalDur().toFixed(2) + 's / ' + expected.toFixed(2) + 's'
