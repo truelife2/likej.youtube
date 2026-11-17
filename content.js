@@ -80,7 +80,13 @@
     }
     /* 本機模式每句輪替顏色，看不出新句從哪開始 */
     .dst .alt { color: #7fd0ff; }
-    .dst .seg { color: #9aa3b2; font-size: 0.72em; padding: 0 3px; opacity: 0.9; }
+    /* 音訊片段號：只是方便回報「哪個片段聽起來接壞了」，不搶字幕焦點 */
+    .dst .seg {
+      color: #8b93a3;
+      font-size: 0.5em;
+      font-weight: 400;
+      padding-left: 0;
+    }
 
     .notice {
       margin-top: 6px;
@@ -172,8 +178,10 @@
   let fadeTimer = null;
   let outTurnDone = false;
   let outAlt = false;
-  // 在字幕上標示配音的音訊分段（│ = 換段、⏸0.8s = 這句前面停多久），診斷用
+  // 在字幕上標示配音片段（每段字幕文字後面一個 (1)、(2)…），診斷用
   let showSeg = false;
+  // 字幕片段號：跟著每一段譯文文字走，不是等一批音訊後全部補在最後
+  let fragSeq = 0;
   // 即時翻譯模型是連續串流：字幕不要每到一段就清空，改用句子邊界往上捲
   let continuous = false;
   let appendTurns = false;
@@ -422,6 +430,7 @@ let quietCount = 0;
     rows.input.text = '';
     rows.output.text = '';
     rows.output.parts = [];
+    fragSeq = 0;
     outAlt = false;
     if (els) {
       els.src.textContent = '';
@@ -442,42 +451,47 @@ let quietCount = 0;
     scheduleRender();
   }
 
-  // 音訊分段記號：插在字幕目前的位置，用來對照「這段聲音從哪裡開始」
-  function outMark(gapMs, dur, quietMs) {
-    const gap = Math.max(0, Number(gapMs) || 0);
-    const quiet = Math.max(0, Number(quietMs) || 0);
-    // 空白期間分頁音訊本身就是安靜的 → 是來源沒有聲音，不是我們晚播
-    const srcQuiet = gap >= 300 && quiet >= gap * 0.6;
-    let txt = '│';
-    if (gap >= 300) {
-      txt = '⏸' + (gap / 1000).toFixed(1) + 's' + (srcQuiet ? '(來源無聲)' : '(譯音慢)') + ' ';
-    }
-    const title =
-      '音訊分段 ' +
-      (Number(dur) || 0).toFixed(1) +
-      's' +
-      (gap >= 300
-        ? '；前面空 ' + (gap / 1000).toFixed(1) + 's（' + (srcQuiet ? '來源音訊也是靜音' : '來源有聲音，是譯音晚到') + '）'
-        : '');
-    rows.output.parts.push({ t: txt, alt: false, mark: true, title });
+  // 片段號：接在「這一段剛出現的字」後面，下一段字再出現時就接在下一個號碼前，
+  // 所以字幕會是「文字(1) 文字(2) 文字(3)」，不會全部擠在最後。
+  function addFragTag() {
+    if (!rows.output.text) return;
+    fragSeq += 1;
+    rows.output.parts.push({ t: '(' + fragSeq + ') ', mark: true });
     rows.output.text = rows.output.parts.map((p) => p.t).join('').replace(/^\s+/, '');
     trimOutput();
     scheduleRender();
   }
 
+  // 取最後一段「真正的字幕文字」；片段號 (N) 不算，否則句尾標點會被它擋住，
+  // 連續串流模型就永遠不會換色。
+  function lastTextTail() {
+    for (let i = rows.output.parts.length - 1; i >= 0; i--) {
+      const p = rows.output.parts[i];
+      if (!p.mark && p.t) return p.t;
+    }
+    return '';
+  }
+
   function outClear() {
     rows.output.parts = [];
     rows.output.text = '';
+    fragSeq = 0;
   }
 
   function trimOutput() {
     const LIMIT = 400;
-    if (rows.output.text.length <= LIMIT) return;
-    let over = rows.output.text.length - LIMIT;
     const parts = rows.output.parts;
+    // 只算真正的字幕文字；片段號不占字數，否則 (1)(2) 一多就會提早把字丟掉
+    let plain = 0;
+    for (const p of parts) if (!p.mark) plain += p.t.length;
+    if (plain <= LIMIT) return;
+    let over = plain - LIMIT;
     while (over > 0 && parts.length) {
       const p = parts[0];
-      if (p.t.length <= over) {
+      // 片段號要嘛完整保留、要嘛整個丟掉，切一半會留下看不懂的 `(1`
+      if (p.mark) {
+        parts.shift();
+      } else if (p.t.length <= over) {
         over -= p.t.length;
         parts.shift();
       } else {
@@ -485,6 +499,9 @@ let quietCount = 0;
         over = 0;
       }
     }
+    // 被裁掉段落後面的片段號不要留在開頭
+    while (parts.length && parts[0].mark) parts.shift();
+    if (parts.length) parts[0].t = parts[0].t.replace(/^[\s\n]+/, '');
     rows.output.text = parts.map((p) => p.t).join('');
   }
 
@@ -521,7 +538,7 @@ let quietCount = 0;
             const s = document.createElement('span');
             s.className = 'seg';
             s.textContent = p.t;
-            if (p.title) s.title = p.title;
+            p.el = s;
             els.dst.appendChild(s);
           } else if (p.alt) {
             const s = document.createElement('span');
@@ -539,24 +556,29 @@ let quietCount = 0;
     else flush();
   }
 
-  // 字幕累積太長就沿句子邊界往上捲，保留最近一兩句
+  // 字幕累積太長就沿句子邊界往上捲，保留最近五、六句（避免話還沒唸完字就先消失）
   function rollOutput() {
-    const text = rows.output.text;
-    if (text.length <= 120) return;
-    const keep = 90; // 至少留這麼多字，不要切在半句中間
+    const parts = rows.output.parts;
+    // 只算真正的字幕文字；片段號不算行數，否則「還沒唸就不見」會更嚴重
+    let plainText = '';
+    for (const p of parts) if (!p.mark) plainText += p.t;
+    if (plainText.length <= 220) return;
+    const keep = 170; // 至少留這麼多字，不要切在半句中間
     const marks = ['\n', '。', '！', '？', '；', '! ', '? ', '. '];
     let cut = -1;
     for (const m of marks) {
-      const i = text.lastIndexOf(m, text.length - keep);
+      const i = plainText.lastIndexOf(m, plainText.length - keep);
       if (i > cut) cut = i + m.length;
     }
-    if (cut <= 0) cut = Math.max(0, text.length - 120);
+    if (cut <= 0) cut = Math.max(0, plainText.length - keep);
 
     let over = cut;
-    const parts = rows.output.parts;
     while (over > 0 && parts.length) {
       const p = parts[0];
-      if (p.t.length <= over) {
+      // 片段號要嘛完整保留、要嘛整個丟掉，切一半會留下看不懂的 `(1`
+      if (p.mark) {
+        parts.shift();
+      } else if (p.t.length <= over) {
         over -= p.t.length;
         parts.shift();
       } else {
@@ -564,6 +586,8 @@ let quietCount = 0;
         over = 0;
       }
     }
+    // 被裁掉段落後面的片段號不要留在開頭
+    while (parts.length && parts[0].mark) parts.shift();
     if (parts.length) parts[0].t = parts[0].t.replace(/^[\s\n]+/, '');
     rows.output.text = parts.map((p) => p.t).join('');
     scheduleRender();
@@ -637,15 +661,16 @@ let quietCount = 0;
         // 連續串流模型不送 turn，就改用「句尾標點」當分段點，一樣是白／淺藍輪替。
         if (outTurnDone) {
           if (appendTurns) {
-            if (rows.output.text) outAlt = !outAlt;
+            if (lastTextTail()) outAlt = !outAlt;
           } else if (!continuous) {
             outClear();
           }
           outTurnDone = false;
-        } else if (appendTurns && rows.output.text && /[。！？!?]\s*$/.test(rows.output.text)) {
+        } else if (appendTurns && /[。！？!?]\s*$/.test(lastTextTail())) {
           outAlt = !outAlt;
         }
         outAppend(delta, appendTurns && outAlt);
+        if (showSeg && delta.trim()) addFragTag();
         rollOutput();
         // 譯文回來了就代表管線正常，把先前「沒有逐字稿」這類提示清掉
         if (els.notice && els.notice.textContent) showNotice('');
@@ -654,11 +679,6 @@ let quietCount = 0;
       case 'turn':
         outTurnDone = true;
         touch();
-        break;
-      case 'seg':
-        if (!showSeg) break;
-        ensureUI();
-        outMark(ev.gapMs, ev.dur, ev.quietMs);
         break;
       case 'speech':
         ensureUI();

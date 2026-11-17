@@ -1395,6 +1395,7 @@ function flushPcm() {
   // 先併成單一 Float32，再自己重取樣成「播放裝置的取樣率」。
   // 若直接把 24kHz 的 buffer 丟給 48kHz 的 BufferSource，每個節點都會各自重取樣，
   // 接縫處會留下極短的空隙 → 聽起來就是「幾個字、停一下」。
+  const parts = live.pcmParts;
   let joined;
   try {
     joined = new Float32Array(total);
@@ -1404,7 +1405,7 @@ function flushPcm() {
     return;
   }
   let at = 0;
-  for (const p of live.pcmParts) {
+  for (const p of parts) {
     joined.set(p, at);
     at += p.length;
   }
@@ -1461,12 +1462,8 @@ function flushPcm() {
     return;
   }
   const dur = buffer.duration;
-  // 讓字幕可以標出「每一段譯音從哪裡開始、前面隔了多久」
-  const gapMs = live.lastPlayEnd ? Math.round((startAt - live.lastPlayEnd) * 1000) : 0;
-  const quietMs = live.inQuietSince ? Date.now() - live.inQuietSince : 0;
   live.lastPlayEnd = startAt + dur;
   live.playCursor = live.lastPlayEnd;
-  emit({ kind: 'seg', dur: Math.round(dur * 1000) / 1000, gapMs: Math.max(0, gapMs), quietMs });
   // 翻譯音量拉到 0 時不要壓低原音，否則會變成「沒配音又很小聲」
   if (dubLevel(live.config) > 0) duck(true);
 }

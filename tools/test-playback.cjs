@@ -409,14 +409,6 @@ const overlaps = () =>
   ok(d10 > 0.75 && d10 < 0.9, '整句 0.8 秒一次播完（實際 ' + d10.toFixed(3) + 's）');
 
   /* 全域檢查 */
-  const segs = events.filter((m) => m && m.event && m.event.kind === 'seg');
-  ok(segs.length === scheduled.length, '每段音訊都回報一次分段事件：' + segs.length + ' / ' + scheduled.length);
-  const maxGap = segs.reduce((a, s) => Math.max(a, s.event.gapMs || 0), 0);
-  ok(maxGap >= 1000, '分段事件會帶「前面停了多久」（最大 ' + maxGap + 'ms）');
-  ok(
-    segs.every((s) => typeof s.event.quietMs === 'number'),
-    '分段事件會帶「來源是否安靜」的資訊（quietMs）'
-  );
   ok(!overlaps(), '排程沒有重疊（不會兩段聲音同時唸）');
   const expected = 0.8 + 1.0 + 1.5 + 15.0 + 1.1 + 0.3 + 0.86 + 0.6 + 0.6 + 0.8;
   ok(
