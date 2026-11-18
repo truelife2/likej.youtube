@@ -10,6 +10,9 @@ const DEFAULTS = {
   asrLang: 'en',
   asrModel: '',
   textModel: 'gemini-2.5-flash-lite',
+  localTranslate: false,
+  localTts: false,
+  ttsVoice: '',
   model: 'gemini-3.5-live-translate-preview',
   targetLanguage: '繁體中文（台灣）',
   targetLangCode: 'zh-Hant',
@@ -122,6 +125,9 @@ async function loadConfig() {
   $('model').value = config.model || '';
   $('textModel').value = config.textModel || DEFAULTS.textModel;
   syncTextModelHint();
+  $('localTts').checked = config.localTts === true;
+  $('localTranslate').checked = config.localTranslate === true;
+  setSelectValue($('ttsVoice'), config.ttsVoice || '');
   $('targetLanguage').value = config.targetLanguage || '繁體中文（台灣）';
   $('speechLanguageCode').value = config.speechLanguageCode || '';
   $('mode').value = config.mode === 'text' ? 'text' : 'dub';
@@ -170,6 +176,41 @@ function bindField(id, key, transform) {
   };
   el.addEventListener('input', handler);
   el.addEventListener('change', handler);
+}
+
+// 舊設定可能是清單裡沒有的音色名稱：補一個選項，避免下拉選單顯示空白
+function setSelectValue(el, value) {
+  const v = String(value || '');
+  if (v && !Array.from(el.options).some((o) => o.value === v)) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = v + '（自訂）';
+    el.appendChild(opt);
+  }
+  el.value = v;
+}
+
+// 依伺服器回報的配音引擎過濾音色清單（edge 只留 Edge 語音、sapi 只留 Windows 內建）
+let voiceGroups = null;
+let voiceEngine = '';
+
+function applyVoiceOptions(engine) {
+  const sel = $('ttsVoice');
+  if (!sel) return;
+  if (!voiceGroups) {
+    voiceGroups = Array.from(sel.querySelectorAll('optgroup')).map((g) => ({
+      label: g.label,
+      html: g.innerHTML,
+    }));
+  }
+  const cur = sel.value;
+  const want = engine === 'sapi' ? /SAPI|內建/ : engine === 'edge' ? /Edge/ : null;
+  sel.innerHTML = '<option value="">後端預設</option>' + voiceGroups
+    .filter((g) => !want || want.test(g.label))
+    .map((g) => '<optgroup label="' + g.label + '">' + g.html + '</optgroup>')
+    .join('');
+  sel.value = Array.from(sel.options).some((o) => o.value === cur) ? cur : '';
+  voiceEngine = engine;
 }
 
 // 用 <select> 而不是 datalist：datalist 會依輸入框內容過濾，填好模型名稱後只看得到那一項
@@ -240,7 +281,7 @@ function syncEngineUi() {
   const hint = $('engineHint');
   if (hint) {
     hint.textContent = local
-      ? '音訊送到你電腦上的 Whisper 辨識（16 倍即時），再請 Gemini 純文字模型翻譯。只有字幕、沒有配音，延遲固定約 2 秒。'
+      ? '音訊送到你電腦上的 Whisper 辨識（16 倍即時），再翻譯成字幕。勾選「翻譯也走本機」就不會用掉 Gemini 額度；勾選「本機模式也配音」並在伺服器接上 TTS 才會有聲音。'
       : 'Gemini 直接聽音訊、邊翻邊產生中文語音（可配音）。快語速時輸出會越積越多，這是模型本身的限制。';
   }
   if (local) checkAsr();
@@ -268,9 +309,14 @@ async function checkAsr() {
     const data = await res.json();
     if (!res.ok || !data || !data.ok) throw new Error('bad');
     if (id !== asrChecking) return;
+    const be = data.tts && data.tts.backend;
+    if (be && be !== voiceEngine) applyVoiceOptions(be);
     const dev = data.device === 'cuda' ? 'GPU' : String(data.device || 'CPU');
+    const tts = data.tts && data.tts.ready ? '配音已接上' : '配音未接上';
+    const mt = data.translate && data.translate.ready ? '翻譯已接上' : '翻譯未接上';
     dot.className = 'asrdot ok';
-    txt.textContent = '服務正常（' + dev + (data.loading ? '，模型載入中' : '') + '）';
+    txt.textContent =
+      '服務正常（' + dev + (data.loading ? '，模型載入中' : '') + '，' + mt + '，' + tts + '）';
   } catch (_) {
     if (id !== asrChecking) return;
     dot.className = 'asrdot bad';
@@ -661,6 +707,15 @@ async function fetchModels(btnId) {
     syncTextModelHint();
     return v;
   });
+  bindField('localTranslate', 'localTranslate', () => {
+    config.localTranslate = $('localTranslate').checked;
+    return config.localTranslate;
+  });
+  bindField('localTts', 'localTts', () => {
+    config.localTts = $('localTts').checked;
+    return config.localTts;
+  });
+  bindField('ttsVoice', 'ttsVoice');
   bindField('model', 'model', (v) => {
     syncModelUi();
     return v;

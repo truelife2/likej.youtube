@@ -43,9 +43,11 @@ const live = {
   pcmAt: 0,
   sentBoundary: false,
   sentAt: 0,
+  // 換色點：上一整塊譯文已結束、下一塊的第一段文字到了（字幕換色）。
+  // 配音統一等到這一刻才整塊播出，畫面上的色塊＝真的聽到的音訊片段。
+  flipAt: 0,
   played: false,
   justFlushedAt: 0,
-  inQuietSince: 0,
   lastPlayEnd: 0,
   textTail: '',
   // 逐字稿常比譯音先到，用「每字平均幾秒譯音」粗估這句還缺多少音訊（最多只多等 0.8 秒）
@@ -110,6 +112,9 @@ const live = {
   tailDur: 0,
   tailTimer: null,
   tailAt: 0,
+  ttsChain: null,
+  ttsWarned: false,
+  mtWarned: false,
 };
 
 // 本地能量 VAD（見 vad.js）：把音訊切成一句一句
@@ -246,8 +251,9 @@ async function startCapture(streamId, config) {
 
   if (live.engine === 'local') {
     live.ready = true;
-    live.resolvedMode = 'silent'; // 本機模式沒有配音
-    setStatus('connected', '本機辨識中（Whisper + Gemini 文字翻譯）');
+    // 'silent' 只擋 Gemini 模式的 playPcm；本機配音走 speakLocal → queuePcm
+    live.resolvedMode = 'silent';
+    setStatus('connected', localStatusText());
     emit({ kind: 'status', status: 'connected', detail: 'local' });
     return { ok: true };
   }
@@ -288,9 +294,18 @@ function trackLatencyStart(peak) {
 
 /* ------------------------------------------------------------------ */
 /* 本機 Whisper 模式（engine = 'local'）                               */
-/*   音訊 → 本機 ASR（http://127.0.0.1:8791）→ Gemini 文字模型翻譯      */
-/*   沒有配音，只出字幕，但延遲固定、不會越追越遠                        */
+/*   音訊 → 本機 ASR（http://127.0.0.1:8791）→ 翻譯（預設 Gemini，可改本機） */
+/*   預設只有字幕；伺服器接上 TTS 後（/tts）勾選「本機模式也配音」即可   */
+/*   一句譯文＝一個色塊，拿到語音就整句排進播放佇列                      */
 /* ------------------------------------------------------------------ */
+
+// 狀態列文字：翻譯來源與配音會依設定不同，不要寫死「Gemini」
+function localStatusText() {
+  const cfg = live.config || {};
+  const mt = cfg.localTranslate ? '本機翻譯' : 'Gemini 文字翻譯';
+  const tts = cfg.localTts ? ' + 本機配音' : '';
+  return '本機辨識中（Whisper + ' + mt + tts + '）';
+}
 
 function joinChunks(chunks) {
   let total = 0;
@@ -394,6 +409,13 @@ function pumpLocal() {
 
       emit({ kind: 'output', delta: zh });
       emit({ kind: 'turn' });
+      // 本機配音：一句＝一個色塊。排進佇列後就繼續辨識下一句，
+      // 播放順序由 playCursor 保證，不會因為等語音而拖慢字幕。
+      if (live.config && live.config.localTts) {
+        live.ttsChain = (live.ttsChain || Promise.resolve())
+          .then(() => speakLocal(zh))
+          .catch(() => {});
+      }
       live.outSec += job.durSec;
       live.lastEn = en;
       live.lastZh = zh;
@@ -450,7 +472,8 @@ async function transcribeLocal(pcm) {
   }
 }
 
-async function translateLocal(text) {
+// 翻譯（Gemini 文字模型）：雲端，品質好但會吃免費額度
+async function translateGemini(text) {
   const cfg = live.config || {};
   const key = String(cfg.apiKey || '').trim();
   if (!key) throw new Error('沒有 API key');
@@ -509,6 +532,119 @@ async function translateLocal(text) {
   return out;
 }
 
+// 本機模式配音：把譯文送到本機服務的通用 /tts 介面，取回 PCM 後排進同一條播放佇列。
+// 伺服器沒接上語音模型時會回 501，這裡只提示一次，字幕完全不受影響。
+async function speakLocal(text) {
+  const cfg = live.config || {};
+  if (!cfg.localTts || !text || !live.running) return;
+  const base = String(cfg.asrUrl || 'http://127.0.0.1:8791').replace(/\/+$/, '');
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const res = await fetch(base + '/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        lang: String(cfg.targetLangCode || 'zh-Hant'),
+        voice: String(cfg.ttsVoice || ''),
+      }),
+      signal: ctl.signal,
+    });
+    const raw = await res.text();
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch (_) {}
+    if (!res.ok || !data || !data.ok) {
+      throw new Error((data && data.error) || 'HTTP ' + res.status);
+    }
+
+    const bytes = base64ToBytes(String(data.pcm || ''));
+    if (!bytes || bytes.length < 2) return;
+    const i16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.length / 2));
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    if (!live.running || !live.ctx) return;
+
+    queuePcm(f32, Number(data.rate) || 24000);
+    flushPcm(); // TTS 一次就給整句，不必等字幕換色
+    live.ttsWarned = false;
+  } catch (err) {
+    if (!live.ttsWarned) {
+      live.ttsWarned = true;
+      emit({
+        kind: 'error',
+        message:
+          '本機配音沒有聲音（' +
+          (err && err.message ? err.message : err) +
+          '）。字幕不受影響；請確認本機服務已接上 TTS，見 local-asr\\README.md。',
+      });
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 本機翻譯：POST /translate（本機 LLM），完全不用 Gemini 額度
+async function translateLocal(text) {
+  const cfg = live.config || {};
+  const base = String(cfg.asrUrl || 'http://127.0.0.1:8791').replace(/\/+$/, '');
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 20000);
+  try {
+    const res = await fetch(base + '/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        lang: String(cfg.targetLangCode || 'zh-Hant'),
+        src: String(cfg.asrLang || 'en'),
+      }),
+      signal: ctl.signal,
+    });
+    const raw = await res.text();
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch (_) {}
+    if (!res.ok || !data || !data.ok) {
+      const err = new Error((data && data.error) || 'HTTP ' + res.status);
+      err.status = res.status;
+      throw err;
+    }
+    return String(data.text || '').trim();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 依設定挑翻譯來源。本機沒接上翻譯模型（501/404/500）或連不上時，
+// 若還有 Gemini 金鑰就自動退回雲端，只提醒一次，字幕不中斷。
+async function translateOne(text) {
+  const cfg = live.config || {};
+  if (!cfg.localTranslate) return translateGemini(text);
+  try {
+    return await translateLocal(text);
+  } catch (err) {
+    const st = err && err.status;
+    const fallback = st === 501 || st === 404 || st === 500 || st === 0 || st === undefined;
+    const key = String(cfg.apiKey || '').trim();
+    if (!fallback || !key) throw err;
+    if (!live.mtWarned) {
+      live.mtWarned = true;
+      emit({
+        kind: 'note',
+        message:
+          '本機翻譯服務沒有接上翻譯模型（' +
+          (err && err.message ? err.message : err) +
+          '），暫時改用 Gemini 文字翻譯。設定方式見 local-asr\\README.md。',
+      });
+    }
+    return translateGemini(text);
+  }
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -520,7 +656,7 @@ const QUOTA_WAIT_MS = 60000;
 async function translateWithRetry(text) {
   for (let i = 0; ; i++) {
     try {
-      return await translateLocal(text);
+      return await translateOne(text);
     } catch (err) {
       const st = err && err.status;
       const transient = st === 429 || (st >= 500 && st < 600);
@@ -533,7 +669,7 @@ async function translateWithRetry(text) {
 function resumeAfterQuota() {
   if (!live.running) return;
   live.quotaUntil = 0;
-  setStatus('connected', '本機辨識中（Whisper + Gemini 文字翻譯）');
+  setStatus('connected', localStatusText());
   emit({ kind: 'note', message: '配額等待結束，繼續翻譯…' });
   pumpLocal();
 }
@@ -607,11 +743,6 @@ function onAudioChunk(buf) {
   const peak = chunkPeak(buf);
   live.level = live.level * 0.7 + peak * 0.3;
   if (peak > live.peakHold) live.peakHold = peak;
-  // 講者是否正在說話（給配音排程用：講者停下來 = 這句講完了，可以播）
-  // 這是直接看「擷取到的波形」，與語音辨識、模型回傳的延遲無關（每 100ms 就有一塊）。
-  // 門檻刻意壓低，寧可把輕聲說話當成「還在講」，也不要誤判成停頓而把句子切斷。
-  if (peak > SPK_PEAK) live.inQuietSince = 0;
-  else if (!live.inQuietSince) live.inQuietSince = Date.now();
   // 本機 Whisper 模式：不連 Gemini Live，走本機 ASR + 文字翻譯
   if (live.engine === 'local') {
     if (live.running) localOnChunk(buf);
@@ -1085,6 +1216,9 @@ async function handleServerPayload(data) {
     // 這裡只留下真正的譯文。
     if (!isTranslateModel((live.config || {}).model)) t = stripMeta(t);
     if (t) {
+      // 這一刻就是字幕換色：上一句已經收尾，新的譯文才出現。
+      // 記下來，讓播放迴圈把「前一整塊」的譯音一次唸完，而不是句子一結束就先播。
+      if (live.sentBoundary && !live.flipAt) live.flipAt = Date.now();
       live.textTail = t;
       live.curChars += visibleChars(t);
       markSentenceEnd(t);
@@ -1093,7 +1227,14 @@ async function handleServerPayload(data) {
     }
   }
 
-  if (sc.turnComplete || sc.turn_complete) emit({ kind: 'turn' });
+  if (sc.turnComplete || sc.turn_complete) {
+    // 有 turn 事件的模型：回合結束＝一句結束（字幕下一次換色）
+    if (live.textTail && !live.sentBoundary) {
+      live.sentBoundary = true;
+      live.sentAt = Date.now();
+    }
+    emit({ kind: 'turn' });
+  }
 }
 
 // 累計「已經產生的譯音秒數」，用來估模型落後多少（落後就無法靠客戶端補救，只能暫停影片讓它追上）
@@ -1201,34 +1342,28 @@ function playPcm(b64, mimeType) {
 
 /* 連續串流模型一次只回幾十毫秒的音訊。
    逐塊排程會在每個接縫留下缺口（聽起來就是「幾個字、停一下」），
-   所以先把音塊併起來，等「一個句子」的譯音都到齊，再用一個 AudioBuffer 播出。
-   一句只播一次的觸發點（依優先序）：
-   ① 講者已經停頓 0.6 秒，且譯音也靜止 0.3 秒 → 這句一定講完了（最可靠）
-   ② 譯文逐字稿出現句尾標點（。！？!?）且音訊已靜止 0.4 秒 → 這句到齊了
-   ③ 有句尾標點但音訊一直零碎滴進來 → 最多再等 4 秒
-   ④ 音訊本身停下來超過 6 秒，而且逐字稿已經到句尾（沒有標點、也沒有講者停頓訊號時的保底）
-      逐字稿還在逗號（句子沒完）時改成等 20 秒：模型中途卡住 6 秒很常見，
-      太早播會把同一句切成「幾個字 → 空白 → 再幾個字」
+   所以先把音塊併起來，等「一個色塊」的譯音都到齊，再用一個 AudioBuffer 播出。
+   每個色塊只播一次的觸發點（依優先序）：
+   ① 字幕換色（`flipAt`：上一句已收尾、下一段文字才到），且譯音靜止 0.25 秒 → 這塊一定講完了
+   ② 換色後譯音還零碎滴進來 → 最多再等 FLIP_MAX_WAIT 秒就播
+   ③ 等不到下一次換色（講者停很久、模型沒再吐字）→ 句尾已標記且等滿 FLUSH_MAX_WAIT
+   ④ 逐字稿與音訊都完全靜止超過 IDLE_FLUSH（半句時 OPEN_IDLE）→ 保底
    ⑤ 累積超過 PCM_MAX 秒的保底，避免延遲無限長大
-   播放中絕不因為「快斷炊」提前切句，否則一句會被切成好幾段。 */
+   播放中絕不因為「快斷炊」提前切句，否則一塊會被切成好幾段。 */
 const PCM_LEAD = 0.6; // 開播前先緩衝（吸收網路抖動，避免一開口就斷）
 const PCM_RELEAD = 0.12; // 已經在播、只是暫時沒料時，重新接上去只需要很短的前置量
 const TRIM_HEAD = 0.06; // 每句開頭保留這麼多（更前面的靜音剪掉）
 const TRIM_TAIL = 0.1; // 每句結尾保留這麼多（模型常在句尾附一小段靜音）
-const PCM_MAX = 14.0; // 等不到句子結尾時的保底（正常句子遠短於此，等同不切句）
-const FLUSH_QUIET = 700; // 出現句尾標點後，音訊要靜止這麼久才算這句到齊
-// （模型常在句中「停頓一下再繼續」，等久一點就能把那段空白併進同一段，再壓縮掉）
-const FLUSH_MAX_WAIT = 4000; // 出現句尾標點後最多再等這麼久（音訊零碎滴進來時的保險）
-const SPEAKER_QUIET = 700; // 講者安靜這麼久 → 這句講完了
-const SPEAKER_IDLE = 300; // 講者已停，譯音再靜止這麼久就直接播
-const SPK_PEAK = 0.012; // 「有出聲」的峰值門檻（比 0.02 更低，避免把輕聲漏掉）
+const PCM_MAX = 20.0; // 等不到換色時的保底（整塊上限，避免延遲無限長大）
+const FLIP_IDLE = 250; // 換色後，譯音靜止這麼久就當這一整塊到齊了
+const FLIP_MAX_WAIT = 1500; // 換色後最多再等這麼久（音訊零碎滴進來時的保險）
+const FLUSH_MAX_WAIT = 4000; // 出現句尾標點後最多再等這麼久（一直等不到換色時的保險）
 const IDLE_FLUSH = 6000; // 逐字稿已到句尾、音訊也靜止這麼久才當成一句結束
 const OPEN_IDLE = 20000; // 逐字稿還沒到句尾（模型卡在半句）時，寧可多等也不要把同一句切開
 
-// 譯文出現句尾標點 → 這句的譯音應該都到了，等音訊收尾就整段播
 // 逐字稿是不是已經講到「句子結束」。以逗號或沒有標點結尾，代表句子還在繼續，
-// 這時即使講者停頓也先不要播，否則模型晚一點才補上的後半段會變成另一段，
-// 聽起來就是「講幾個字 → 空白幾秒 → 再講」。
+// 下一段文字出現時字幕才會換色（也就是配音的播出點，見 flipAt）。
+// 這裡只在「一直等不到換色」的保底路徑用到。
 function textClosed(t) {
   const s = String(t || '').trim();
   if (!s) return true; // 沒有逐字稿可參考 → 照常播
@@ -1435,6 +1570,7 @@ function flushPcm() {
   live.pcmLen = 0;
   live.sentBoundary = false;
   live.sentAt = 0;
+  live.flipAt = 0;
   live.justFlushedAt = Date.now();
 
   const node = ctx.createBufferSource();
@@ -1500,6 +1636,7 @@ function resetPlayback() {
   live.pcmAt = 0;
   live.sentBoundary = false;
   live.sentAt = 0;
+  live.flipAt = 0;
   live.justFlushedAt = 0;
   live.played = false;
   live.curChars = 0;
@@ -1573,6 +1710,9 @@ async function stop(silent) {
   live.lastLoudAt = 0;
   live.latencyMs = 0;
   live.sentMs = 0;
+  live.ttsChain = null;
+  live.ttsWarned = false;
+  live.mtWarned = false;
   live.statAt = 0;
   live.rateX = 1;
   live.inSec = 0;
@@ -1581,7 +1721,6 @@ async function stop(silent) {
   live.behind = 0;
   live.level = 0;
   live.peakHold = 0;
-  live.inQuietSince = 0;
   live.textTail = '';
   live.sPerChar = 0;
   live.curChars = 0;
@@ -1742,29 +1881,28 @@ if (typeof setInterval === 'function') {
     emitStats(Date.now());
   }, 2000);
 
-  // 每 120ms 檢查一次：一句話的譯音到齊了就整段播，絕不中途切句。
+  // 每 120ms 檢查一次：一整塊（一個顏色）的譯音到齊、而且字幕已經換色，
+  // 才把這一整塊一次播完，絕不中途切塊。
   setInterval(() => {
     if (!live.running || !live.pcmLen) return;
     if (!live.ctx) return;
     const now = Date.now();
     const secs = live.pcmLen / (live.pcmRate || 24000);
     const idle = live.pcmAt ? now - live.pcmAt : 0;
-    const quiet = live.inQuietSince ? now - live.inQuietSince : 0;
+    const flipWait = live.flipAt ? now - live.flipAt : 0;
     // 硬條件：時間到就一定播（避免永遠不出聲）
     const hard =
       (live.sentBoundary && now - live.sentAt >= FLUSH_MAX_WAIT) ||
       (idle >= (textClosed(live.textTail) ? IDLE_FLUSH : OPEN_IDLE) && secs >= 0.25);
-    // 軟條件：看起來講完了。逐字稿常比譯音先到，所以先確認音訊夠整句
-    const soft =
-      (quiet >= SPEAKER_QUIET && idle >= SPEAKER_IDLE && secs >= 0.2 && textClosed(live.textTail)) ||
-      (live.sentBoundary && idle >= FLUSH_QUIET && secs >= 0.2);
+    // 軟條件：字幕已經換色（上一整塊確定結束），譯音也收得差不多 → 整塊播
+    const soft = !!live.flipAt && (flipWait >= FLIP_MAX_WAIT || (secs >= 0.15 && idle >= FLIP_IDLE));
 
     if (secs >= PCM_MAX || hard) {
-      // 講不停又收不到任何結束訊號 → 保底切一次，避免延遲無限長大
+      // 講不停又等不到下一次換色 → 保底切一次，避免延遲無限長大
       flushPcm();
     } else if (soft) {
-      // 音訊明顯少於這句字數該有的長度時多等一下（最多 HOLD_MAX，免得把下一句開頭吸進來）
-      if (audioEnough(secs) || (live.holdSince && now - live.holdSince >= HOLD_MAX)) {
+      // 音訊明顯少於這塊字數該有的長度時多等一下（最多 HOLD_MAX / FLIP_MAX_WAIT）
+      if (audioEnough(secs) || flipWait >= FLIP_MAX_WAIT || (live.holdSince && now - live.holdSince >= HOLD_MAX)) {
         flushPcm();
       } else if (!live.holdSince) {
         live.holdSince = now;

@@ -451,8 +451,8 @@ let quietCount = 0;
     scheduleRender();
   }
 
-  // 片段號：接在「這一段剛出現的字」後面，下一段字再出現時就接在下一個號碼前，
-  // 所以字幕會是「文字(1) 文字(2) 文字(3)」，不會全部擠在最後。
+  // 片段號：一個色塊（＝一次配音）一個號碼，標在色塊結尾、也就是字幕換色的那一刻。
+  // 所以號碼出現的同時，那一段配音正好開始播；聽到哪一段接得怪，回報號碼就好。
   function addFragTag() {
     if (!rows.output.text) return;
     fragSeq += 1;
@@ -659,18 +659,25 @@ let quietCount = 0;
         const delta = ev.delta || '';
         // 換色規則：能辨識回合（有 turn 事件）就每回合換色；
         // 連續串流模型不送 turn，就改用「句尾標點」當分段點，一樣是白／淺藍輪替。
+        // 換色點＝上一整塊結束、下一塊開始，也就是配音整段播出的時刻（見 offscreen 的 flipAt），
+        // 片段號跟著標在同一個位置，號碼才會對得上聽到的音訊片段。
+        let flipped = false;
         if (outTurnDone) {
           if (appendTurns) {
-            if (lastTextTail()) outAlt = !outAlt;
+            if (lastTextTail()) {
+              outAlt = !outAlt;
+              flipped = true;
+            }
           } else if (!continuous) {
             outClear();
           }
           outTurnDone = false;
         } else if (appendTurns && /[。！？!?]\s*$/.test(lastTextTail())) {
           outAlt = !outAlt;
+          flipped = true;
         }
+        if (showSeg && flipped) addFragTag();
         outAppend(delta, appendTurns && outAlt);
-        if (showSeg && delta.trim()) addFragTag();
         rollOutput();
         // 譯文回來了就代表管線正常，把先前「沒有逐字稿」這類提示清掉
         if (els.notice && els.notice.textContent) showNotice('');

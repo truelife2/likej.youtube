@@ -13,6 +13,41 @@ const ok = (cond, msg) => {
 
 const sockets = [];
 const runtimeMessages = [];
+const fetchCalls = [];
+
+// 假的本機 ASR / TTS / Gemini 文字翻譯；情境五會檢查呼叫內容
+const TTS_SINE = (() => {
+  const n = 12000; // 0.5 秒 @24kHz
+  const i16 = new Int16Array(n);
+  for (let i = 0; i < n; i++) i16[i] = Math.round(0.3 * 32767 * Math.sin((2 * Math.PI * 220 * i) / 24000));
+  return Buffer.from(i16.buffer).toString('base64');
+})();
+
+async function fakeFetch(url, opts = {}) {
+  const u = String(url);
+  fetchCalls.push({ url: u, body: opts.body == null ? '' : String(opts.body) });
+  if (u.endsWith('/asr')) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, text: 'hello world' }),
+      text: async () => '{"ok":true,"text":"hello world"}',
+    };
+  }
+  if (u.endsWith('/tts')) {
+    const body = JSON.stringify({ ok: true, rate: 24000, pcm: TTS_SINE });
+    return { ok: true, status: 200, json: async () => JSON.parse(body), text: async () => body };
+  }
+  if (u.endsWith('/translate')) {
+    const body = JSON.stringify({ ok: true, text: '你好世界（本機）', ms: 80, backend: 'nllb' });
+    return { ok: true, status: 200, json: async () => JSON.parse(body), text: async () => body };
+  }
+  if (u.includes('generativelanguage')) {
+    const body = JSON.stringify({ candidates: [{ content: { parts: [{ text: '你好世界' }] } }] });
+    return { ok: true, status: 200, json: async () => JSON.parse(body), text: async () => body };
+  }
+  throw new Error('unexpected fetch: ' + u);
+}
 
 class FakeWS {
   constructor(url) {
@@ -31,6 +66,7 @@ class FakeWS {
 FakeWS.OPEN = 1;
 
 const nodes = [];
+const sources = [];
 
 class FakeCtx {
   constructor() {
@@ -54,7 +90,15 @@ class FakeCtx {
     return { duration: len / rate, copyToChannel() {} };
   }
   createBufferSource() {
-    return { connect() {}, start() {}, stop() {}, onended: null };
+    const node = {
+      connect() {},
+      start() {
+        sources.push(node);
+      },
+      stop() {},
+      onended: null,
+    };
+    return node;
   }
   async resume() {}
   async close() {}
@@ -87,9 +131,13 @@ const sandbox = {
   ArrayBuffer,
   setTimeout,
   clearTimeout,
+  setInterval,
+  clearInterval,
   encodeURIComponent,
   atob,
   btoa,
+  AbortController,
+  fetch: fakeFetch,
   SpeechSegmenter,
   WebSocket: FakeWS,
   AudioContext: FakeCtx,
@@ -282,6 +330,147 @@ const silenceChunk = () => new Int16Array(1600).buffer;
 
   await sandbox.stop(false);
 
-  console.log(fail ? '\n' + fail + ' 項失敗' : '\n全部流程檢查通過');
+  /* ---------------- 情境四：配音等字幕換色才整塊播 ---------------- */
+  runtimeMessages.length = 0;
+  sources.length = 0;
+  const res4 = await sandbox.start('stream-id', {
+    apiKey: 'test-key',
+    model: 'gemini-3.5-live-translate-preview',
+    mode: 'dub',
+    targetLanguage: '繁體中文（台灣）',
+    targetLangCode: 'zh-Hant',
+    vad: 'client',
+    vadSensitivity: 5,
+    originalVolume: 0.25,
+  });
+  ok(!res4.error, 'flip: start() 沒有回錯');
+
+  const ws4 = sockets[sockets.length - 1];
+  ws4.onmessage({ data: JSON.stringify({ setupComplete: {} }) });
+  // 一句到齊（句尾標點）＋半秒譯音：字幕這時還沒換色，所以先不播
+  const halfSec = Buffer.alloc(24000).toString('base64');
+  ws4.onmessage({
+    data: JSON.stringify({
+      serverContent: {
+        modelTurn: { parts: [{ inlineData: { mimeType: 'audio/pcm;rate=24000', data: halfSec } }] },
+        outputTranscription: { text: '第一句。' },
+      },
+    }),
+  });
+  tick(1000);
+  await new Promise((r) => setTimeout(r, 400));
+  ok(sources.length === 0, 'flip: 還沒換色就不播（句子到齊也先押著）');
+
+  // 下一段譯文出現＝字幕換色 → 前一整塊這時才播，而且只播一次
+  ws4.onmessage({
+    data: JSON.stringify({ serverContent: { outputTranscription: { text: '第二句' } } }),
+  });
+  await new Promise((r) => setTimeout(r, 500));
+  ok(sources.length === 1, 'flip: 換色後整塊播一次 → ' + sources.length);
+
+  await sandbox.stop(false);
+
+  /* ---------------- 情境五：本機模式配音走通用 /tts ---------------- */
+  runtimeMessages.length = 0;
+  fetchCalls.length = 0;
+  sources.length = 0;
+  const res5 = await sandbox.start('stream-id', {
+    engine: 'local',
+    asrUrl: 'http://127.0.0.1:8791',
+    asrLang: 'en',
+    apiKey: 'test-key',
+    textModel: 'gemini-flash-lite-latest',
+    targetLanguage: '繁體中文（台灣）',
+    targetLangCode: 'zh-Hant',
+    localTts: true,
+    ttsVoice: '',
+    vad: 'client',
+    vadSensitivity: 5,
+    originalVolume: 0.25,
+  });
+  ok(!res5.error, 'local: start() 沒有回錯');
+
+  const node5 = nodes[nodes.length - 1];
+  for (let i = 0; i < 20; i++) {
+    tick();
+    node5.port.onmessage({ data: pcmChunk(0.3) });
+  }
+  for (let i = 0; i < 12; i++) {
+    tick();
+    node5.port.onmessage({ data: silenceChunk() });
+  }
+
+  const waitFor = async (fn, ms = 3000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      if (fn()) return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return fn();
+  };
+  await waitFor(() => sources.length > 0);
+
+  ok(fetchCalls.some((c) => /\/asr$/.test(c.url)), 'local: 音訊有送到本機 /asr');
+  const ttsCall = fetchCalls.find((c) => /\/tts$/.test(c.url));
+  ok(!!ttsCall, 'local: 譯文有送到通用 /tts');
+  ok(!!ttsCall && ttsCall.body.includes('你好世界'), 'local: /tts 收到的是譯文');
+  ok(!!ttsCall && ttsCall.body.includes('zh-Hant'), 'local: /tts 有帶目標語言');
+  ok(sources.length === 1, 'local: 一句配音播一次 → ' + sources.length);
+
+  const outs5 = runtimeMessages.filter((m) => m.type === 'EVENT' && m.event.kind === 'output');
+  ok(outs5.length === 1 && outs5[0].event.delta === '你好世界', 'local: 字幕照常輸出');
+
+  await sandbox.stop(false);
+
+  /* ---------------- 情境六：本機模式翻譯走本機 /translate（不用 Gemini） ---------------- */
+  runtimeMessages.length = 0;
+  fetchCalls.length = 0;
+  sources.length = 0;
+  const res6 = await sandbox.start('stream-id', {
+    engine: 'local',
+    asrUrl: 'http://127.0.0.1:8791',
+    asrLang: 'en',
+    apiKey: '',
+    textModel: 'gemini-flash-lite-latest',
+    targetLanguage: '繁體中文（台灣）',
+    targetLangCode: 'zh-Hant',
+    localTranslate: true,
+    localTts: false,
+    vad: 'client',
+    vadSensitivity: 5,
+    originalVolume: 0.25,
+  });
+  ok(!res6.error, 'mt-local: start() 沒有回錯');
+
+  const node6 = nodes[nodes.length - 1];
+  for (let i = 0; i < 20; i++) {
+    tick();
+    node6.port.onmessage({ data: pcmChunk(0.3) });
+  }
+  for (let i = 0; i < 12; i++) {
+    tick();
+    node6.port.onmessage({ data: silenceChunk() });
+  }
+
+  await waitFor(() =>
+    runtimeMessages.some((m) => m.type === 'EVENT' && m.event.kind === 'output')
+  );
+
+  const mtCall = fetchCalls.find((c) => /\/translate$/.test(c.url));
+  ok(!!mtCall, 'mt-local: 譯文有送到本機 /translate');
+  ok(!!mtCall && mtCall.body.includes('hello world'), 'mt-local: /translate 收到的是原文');
+  ok(!!mtCall && mtCall.body.includes('zh-Hant'), 'mt-local: /translate 有帶目標語言');
+  ok(
+    !fetchCalls.some((c) => c.url.includes('generativelanguage')),
+    'mt-local: 完全沒有呼叫 Gemini'
+  );
+  const outs6 = runtimeMessages.filter((m) => m.type === 'EVENT' && m.event.kind === 'output');
+  ok(
+    outs6.length === 1 && outs6[0].event.delta === '你好世界（本機）',
+    'mt-local: 字幕用的是本機譯文'
+  );
+
+  await sandbox.stop(false);
+
   process.exit(fail ? 1 : 0);
 })();

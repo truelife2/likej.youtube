@@ -89,6 +89,26 @@ async function load() {
   $('modelsRoot').value = c.modelsRoot || '';
   $('port').value = String(c.port || 8791);
   $('autostart').checked = !!c.autostart;
+  $('translateBackend').value = c.translateBackend || 'none';
+  $('translateModel').value = c.translateModel || '';
+  $('translateUrl').value = c.translateUrl || '';
+  $('translateCmd').value = c.translateCmd || '';
+  $('llmExe').value = c.llmExe || '';
+  $('llmModel').value = c.llmModel || '';
+  $('llmPort').value = String(c.llmPort || 8080);
+  $('ttsBackend').value = c.ttsBackend || 'none';
+  applyVoiceOptions($('ttsBackend').value);
+  $('ttsCmd').value = c.ttsCmd || '';
+  $('ttsUrl').value = c.ttsUrl || '';
+  const voice = String(c.ttsVoice || '');
+  const vsel = $('ttsVoice');
+  if (voice && !Array.from(vsel.options).some((o) => o.value === voice)) {
+    const opt = document.createElement('option');
+    opt.value = voice;
+    opt.textContent = voice + '（自訂）';
+    vsel.appendChild(opt);
+  }
+  vsel.value = voice;
   $('model').dataset.current = c.model || '';
   await scan();
   await refreshStatus();
@@ -109,6 +129,29 @@ async function scan() {
   fillModels(res.models || [], $('model').dataset.current || '');
 }
 
+async function syncVoiceToExtension(voice) {
+  try {
+    const st = await chrome.storage.local.get('config');
+    const ext = Object.assign({}, st.config || {}, { ttsVoice: voice });
+    await chrome.storage.local.set({ config: ext });
+  } catch (_) {}
+}
+
+// 下拉一改就存，避免「選了但沒按儲存」→ 重啟後還是舊引擎。
+async function persist(key, value, label) {
+  const res = await host('set-config', { config: { [key]: value } }, 8000);
+  const msg = $('saveMsg');
+  if (!res || res.ok === false) {
+    if (msg) msg.textContent = label + '儲存失敗：' + ((res && res.error) || '未知錯誤');
+    return;
+  }
+  if (msg) {
+    msg.textContent =
+      label + '已儲存' +
+      (key === 'ttsBackend' ? '，請按「停止服務」再「啟動服務」。' : '（下一句生效）。');
+  }
+}
+
 async function save() {
   const cfg = {
     python: $('python').value.trim(),
@@ -116,6 +159,17 @@ async function save() {
     port: Number($('port').value) || 8791,
     model: $('model').value || '',
     autostart: $('autostart').checked,
+    translateBackend: $('translateBackend').value || 'none',
+    translateModel: $('translateModel').value.trim(),
+    translateUrl: $('translateUrl').value.trim(),
+    translateCmd: $('translateCmd').value.trim(),
+    llmExe: $('llmExe').value.trim(),
+    llmModel: $('llmModel').value.trim(),
+    llmPort: Number($('llmPort').value) || 8080,
+    ttsBackend: $('ttsBackend').value || 'none',
+    ttsCmd: $('ttsCmd').value.trim(),
+    ttsUrl: $('ttsUrl').value.trim(),
+    ttsVoice: $('ttsVoice').value.trim(),
   };
   const res = await host('set-config', { config: cfg }, 10000);
   const msg = $('saveMsg');
@@ -123,7 +177,13 @@ async function save() {
     if (msg) msg.textContent = '儲存失敗：' + ((res && res.error) || '未知錯誤');
     return;
   }
-  if (msg) msg.textContent = '已儲存。';
+  // 音色是擴充功能每句送給 /tts 的參數；同步寫回擴充功能設定，
+  // 否則 popup 舊的 ttsVoice 會蓋掉這裡選的（看起來就像換了沒反應）。
+  await syncVoiceToExtension(cfg.ttsVoice);
+  if (msg) {
+    msg.textContent =
+      '已儲存。音色已即時套用（下一句就換）；配音引擎／指令的變更要「停止服務」再「啟動服務」。';
+  }
   $('model').dataset.current = cfg.model;
   const auto = await host('autostart', { on: cfg.autostart }, 20000);
   if (msg && auto && auto.ok === false) msg.textContent = '設定已存，但開機啟動設定失敗：' + auto.error;
@@ -154,10 +214,42 @@ function showReloadNeeded() {
   hint('頁面是新的，但瀏覽器還跑著沒有 nativeMessaging 權限的舊版。按「重新載入擴充功能」，再回來按「啟動服務」。');
 }
 
+let voiceGroups = null;
+
+function captureVoiceGroups() {
+  if (voiceGroups) return;
+  voiceGroups = Array.from($('ttsVoice').querySelectorAll('optgroup')).map((g) => ({
+    label: g.label,
+    html: g.innerHTML,
+  }));
+}
+
+// 依配音引擎過濾音色清單：edge 只留 Edge 神經語音、sapi 只留 Windows 內建。
+function applyVoiceOptions(engine) {
+  captureVoiceGroups();
+  const sel = $('ttsVoice');
+  const cur = sel.value;
+  const want = engine === 'sapi' ? /SAPI|內建/ : engine === 'edge' ? /Edge/ : null;
+  sel.innerHTML = '<option value="">後端預設</option>' + voiceGroups
+    .filter((g) => !want || want.test(g.label))
+    .map((g) => '<optgroup label="' + g.label + '">' + g.html + '</optgroup>')
+    .join('');
+  sel.value = Array.from(sel.options).some((o) => o.value === cur) ? cur : '';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   $('btnRefresh').addEventListener('click', refreshStatus);
   $('btnScan').addEventListener('click', scan);
   $('btnSave').addEventListener('click', save);
+  $('ttsBackend').addEventListener('change', () => {
+    applyVoiceOptions($('ttsBackend').value);
+    persist('ttsBackend', $('ttsBackend').value, '配音引擎');
+  });
+  $('ttsVoice').addEventListener('change', async () => {
+    const v = $('ttsVoice').value;
+    await syncVoiceToExtension(v);
+    persist('ttsVoice', v, '音色');
+  });
 
   const reloadBtn = $('btnReloadExt');
   if (reloadBtn) {

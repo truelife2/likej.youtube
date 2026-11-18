@@ -61,6 +61,75 @@
       </section>
 
       <section class="card">
+        <h2>本機翻譯與配音（可選）</h2>
+        <label for="translateBackend">翻譯後端</label>
+        <select id="translateBackend">
+          <option value="none">none（用 Gemini 文字翻譯，會吃額度）</option>
+          <option value="http">http（OpenAI 相容的本機 LLM，建議）</option>
+          <option value="command">command（外部指令，stdin→stdout）</option>
+        </select>
+        <label for="translateModel" class="mt">翻譯模型／名稱</label>
+        <input id="translateModel" spellcheck="false" placeholder="qwen3-4b" />
+        <label for="translateUrl" class="mt">翻譯服務網址（http 後端）</label>
+        <input id="translateUrl" spellcheck="false" placeholder="http://127.0.0.1:8080/v1/chat/completions" />
+        <label for="translateCmd" class="mt">翻譯指令（command 後端）</label>
+        <input id="translateCmd" spellcheck="false" placeholder="python mt.py --to {lang}" />
+        <p class="hint">
+          建議用 <b>http</b> 接本機 LLM（例如 Qwen3-4B，一句約 0.3 秒）；<b>command</b> 適合自己寫的翻譯腳本。
+          改完設定要「停止服務」再「啟動服務」。
+        </p>
+
+        <label for="llmExe" class="mt">本機 LLM 執行檔（llama-server，自動啟動用）</label>
+        <input id="llmExe" spellcheck="false" placeholder="C:\ai\llama.cpp\llama-server.exe" />
+        <label for="llmModel" class="mt">本機 LLM 模型檔（GGUF）</label>
+        <input id="llmModel" spellcheck="false" placeholder="C:\ai\models\llm\Qwen3-4B-Instruct-2507-Q4_K_M.gguf" />
+        <label for="llmPort" class="mt">本機 LLM 連接埠</label>
+        <input id="llmPort" spellcheck="false" placeholder="8080" />
+
+        <label for="ttsBackend" class="mt">配音引擎</label>
+        <select id="ttsBackend">
+          <option value="none">none（不配音）</option>
+          <option value="edge">edge（Edge TTS，內建、需連網、較自然）</option>
+          <option value="sapi">sapi（Windows SAPI，內建、完全離線、較機械）</option>
+          <option value="command">command（外部指令產 WAV）</option>
+          <option value="http">http（外部 TTS 服務）</option>
+        </select>
+        <p class="hint">
+          選 <b>edge</b> 或 <b>sapi</b> 就不用填下面的指令，伺服器會用內附的
+          <code>tts-edge.py</code>／<code>tts-sapi.ps1</code>；下面的指令與網址只有選 command／http 時才需要。
+        </p>
+        <label for="ttsCmd" class="mt">配音指令（command 後端）</label>
+        <input id="ttsCmd" spellcheck="false" placeholder='python -m edge_tts --file "{textfile}" --voice zh-TW-HsiaoChenNeural --write-media "{out}"' />
+        <label for="ttsUrl" class="mt">配音服務網址（http 後端）</label>
+        <input id="ttsUrl" spellcheck="false" placeholder="http://127.0.0.1:9880/tts" />
+        <label for="ttsVoice" class="mt">預設音色</label>
+        <select id="ttsVoice">
+          <option value="">後端預設（目前：HsiaoChen）</option>
+          <optgroup label="Edge TTS（台灣中文，需連網）">
+            <option value="zh-TW-HsiaoChenNeural">HsiaoChen（台灣女聲，溫柔自然）</option>
+            <option value="zh-TW-HsiaoYuNeural">HsiaoYu（台灣女聲，年輕輕快）</option>
+            <option value="zh-TW-YunJheNeural">YunJhe（台灣男聲，沉穩）</option>
+          </optgroup>
+          <optgroup label="Edge TTS（中國中文，需連網）">
+            <option value="zh-CN-XiaoxiaoNeural">Xiaoxiao（中國女聲，語氣自然）</option>
+            <option value="zh-CN-XiaoyiNeural">Xiaoyi（中國女聲，年輕活潑）</option>
+            <option value="zh-CN-YunxiNeural">Yunxi（中國男聲，年輕）</option>
+            <option value="zh-CN-YunjianNeural">Yunjian（中國男聲，低沉）</option>
+            <option value="zh-CN-YunyangNeural">Yunyang（中國男聲，新聞播報）</option>
+          </optgroup>
+          <optgroup label="Windows 內建（離線，較機械）">
+            <option value="Microsoft Hanhan Desktop">Hanhan（台灣女聲，SAPI）</option>
+            <option value="Microsoft Zira Desktop">Zira（英語女聲，SAPI）</option>
+            <option value="Microsoft David Desktop">David（英語男聲，SAPI）</option>
+          </optgroup>
+        </select>
+        <p class="hint">
+          任何能吃文字、吐 WAV 的模型都能接（Piper、Kokoro、CosyVoice2、BreezyVoice、Edge TTS…）。
+          細節見 <code>local-asr\README.md</code>。
+        </p>
+      </section>
+
+      <section class="card">
         <h2>連線</h2>
         <label for="port">連接埠</label>
         <input id="port" type="number" min="1024" max="65535" step="1" />

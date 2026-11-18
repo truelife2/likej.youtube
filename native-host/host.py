@@ -18,6 +18,7 @@ Commands (each is {"cmd": "...", "id": n, ...}):
 
 import json
 import os
+import shlex
 import socket
 import struct
 import subprocess
@@ -39,6 +40,19 @@ DEFAULT_CONFIG = {
     "port": 8791,
     "model": "",
     "autostart": False,
+    "translateBackend": "none",
+    "translateModel": "",
+    "translateUrl": "",
+    "translateCmd": "",
+    "translateSrc": "en",
+    "ttsBackend": "none",
+    "ttsCmd": "",
+    "ttsUrl": "",
+    "ttsVoice": "",
+    "llmExe": "",
+    "llmModel": "",
+    "llmPort": 8080,
+    "llmArgs": "",
 }
 
 
@@ -95,6 +109,81 @@ def asr_status(cfg):
         return {"ok": True, "running": False}
 
 
+def llm_port(cfg):
+    try:
+        return int(cfg.get("llmPort") or 8080)
+    except Exception:
+        return 8080
+
+
+def llm_status(cfg):
+    try:
+        url = "http://127.0.0.1:%d/health" % llm_port(cfg)
+        with urllib.request.urlopen(url, timeout=1.0) as res:
+            return {"ok": True, "running": True, "info": json.loads(res.read().decode("utf-8") or "{}")}
+    except Exception:
+        return {"ok": True, "running": False}
+
+
+def start_llm(cfg):
+    """有設定 llmExe／llmModel 時，順便把 llama-server 拉起來（給 /translate 的 http 後端用）。"""
+    if cfg.get("translateBackend") != "http" and not cfg.get("llmExe"):
+        return {"ok": True, "skipped": True}
+    st = llm_status(cfg)
+    if st.get("running"):
+        return {"ok": True, "already": True}
+    exe = cfg.get("llmExe") or ""
+    model = cfg.get("llmModel") or ""
+    if not exe or not model:
+        return {"ok": False, "error": "沒有設定本機 LLM（llmExe／llmModel）", "skipped": True}
+    if not os.path.isfile(exe):
+        return {"ok": False, "error": "找不到 llama-server：%s" % exe}
+    if not os.path.isfile(model):
+        return {"ok": False, "error": "找不到模型檔：%s" % model}
+    args = [
+        exe,
+        "-m", model,
+        "-ngl", "99",
+        "-c", "4096",
+        "--host", "127.0.0.1",
+        "--port", str(llm_port(cfg)),
+        "-a", cfg.get("translateModel") or "local",
+    ]
+    extra = (cfg.get("llmArgs") or "").strip()
+    if extra:
+        args += shlex.split(extra)
+    # llama-server 需要 cudart／cublas：ComfyUI 的 torch 裡就有，先塞進 PATH
+    env = dict(os.environ)
+    paths = [os.path.dirname(exe)]
+    py = cfg.get("python") or ""
+    if py:
+        paths.append(os.path.join(os.path.dirname(py), "Lib", "site-packages", "torch", "lib"))
+    env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
+    os.makedirs(LOG_DIR, exist_ok=True)
+    logf = open(os.path.join(LOG_DIR, "llm.log"), "ab", buffering=0)
+    flags = 0
+    if os.name == "nt":
+        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd=os.path.dirname(exe) or ASR_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=logf,
+            stderr=logf,
+            creationflags=flags,
+            close_fds=True,
+            env=env,
+        )
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    for _ in range(60):
+        time.sleep(0.5)
+        if llm_status(cfg).get("running"):
+            return {"ok": True, "pid": proc.pid}
+    return {"ok": True, "pid": proc.pid, "note": "已啟動，但還沒開始回應（可能正在載入模型）"}
+
+
 def python_candidates(cfg):
     out = []
     for p in [
@@ -107,10 +196,29 @@ def python_candidates(cfg):
     return out
 
 
+def stop_llm(cfg):
+    if not llm_status(cfg).get("running"):
+        return {"ok": True, "already": True}
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=10
+        ).stdout
+        port = ":%d" % llm_port(cfg)
+        for line in out.splitlines():
+            if port in line and "LISTENING" in line.upper():
+                pid = int(line.split()[-1])
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10)
+                return {"ok": True, "killed": pid}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": "找不到正在執行的 llama-server"}
+
+
 def start_server(cfg):
+    llm = start_llm(cfg)
     st = asr_status(cfg)
     if st.get("running"):
-        return {"ok": True, "already": True, "info": st.get("info")}
+        return {"ok": True, "already": True, "info": st.get("info"), "llm": llm}
     py = cfg.get("python") or ""
     if not os.path.isfile(py):
         cands = python_candidates(cfg)
@@ -149,17 +257,18 @@ def start_server(cfg):
     for _ in range(40):
         time.sleep(0.5)
         if asr_status(cfg).get("running"):
-            return {"ok": True, "pid": proc.pid}
-    return {"ok": True, "pid": proc.pid, "note": "已啟動，但還沒開始回應（可能正在載入模型）"}
+            return {"ok": True, "pid": proc.pid, "llm": llm}
+    return {"ok": True, "pid": proc.pid, "llm": llm, "note": "已啟動，但還沒開始回應（可能正在載入模型）"}
 
 
 def stop_server(cfg):
+    llm = stop_llm(cfg)
     st = asr_status(cfg)
     if not st.get("running"):
-        return {"ok": True, "already": True}
+        return {"ok": True, "already": True, "llm": llm}
     try:
         http_json("/shutdown", cfg, method="POST", body={})
-        return {"ok": True}
+        return {"ok": True, "llm": llm}
     except Exception:
         pass
     # 沒有 /shutdown 的舊版：用 netstat 找 PID 再砍

@@ -29,7 +29,7 @@
         <label for="engine">翻譯引擎</label>
         <select id="engine">
           <option value="live">Gemini 即時翻譯（有配音，可能越翻越慢）</option>
-          <option value="local">本機 Whisper + Gemini 文字（只有字幕，延遲固定）</option>
+          <option value="local">本機 Whisper + Gemini 文字（延遲固定，可選配音）</option>
         </select>
         <p class="hint" id="engineHint"></p>
       </section>
@@ -84,6 +84,14 @@
         </section>
 
         <section class="field">
+          <label><input type="checkbox" id="localTranslate" /><span>本機模式翻譯也走本機（不吃 Gemini 額度）</span></label>
+          <p class="hint">
+            譯文改送到本機服務的 <b>/translate</b>（本機 LLM 約 0.3 秒）。
+            伺服器沒接上翻譯模型時會自動退回下面的 Gemini 文字模型（只提醒一次）。設定見 <b>local-asr\README.md</b>。
+          </p>
+        </section>
+
+        <section class="field">
           <label for="textModel">翻譯用文字模型</label>
           <div class="row">
             <select id="textModel"></select>
@@ -91,6 +99,34 @@
           </div>
           <p class="hint" id="textModelHint">
             純文字翻譯，每句約 0.5–1.5 秒。字幕由 Whisper 的英文字幕翻過來，延遲固定、不會越積越多。
+          </p>
+        </section>
+
+        <section class="field">
+          <label><input type="checkbox" id="localTts" /><span>本機模式也配音（伺服器需接上 TTS）</span></label>
+          <select id="ttsVoice">
+            <option value="">後端預設（目前：HsiaoChen）</option>
+            <optgroup label="Edge TTS（台灣中文，需連網）">
+              <option value="zh-TW-HsiaoChenNeural">HsiaoChen（台灣女聲，溫柔自然）</option>
+              <option value="zh-TW-HsiaoYuNeural">HsiaoYu（台灣女聲，年輕輕快）</option>
+              <option value="zh-TW-YunJheNeural">YunJhe（台灣男聲，沉穩）</option>
+            </optgroup>
+            <optgroup label="Edge TTS（中國中文，需連網）">
+              <option value="zh-CN-XiaoxiaoNeural">Xiaoxiao（中國女聲，語氣自然）</option>
+              <option value="zh-CN-XiaoyiNeural">Xiaoyi（中國女聲，年輕活潑）</option>
+              <option value="zh-CN-YunxiNeural">Yunxi（中國男聲，年輕）</option>
+              <option value="zh-CN-YunjianNeural">Yunjian（中國男聲，低沉）</option>
+              <option value="zh-CN-YunyangNeural">Yunyang（中國男聲，新聞播報）</option>
+            </optgroup>
+            <optgroup label="Windows 內建（離線，較機械）">
+              <option value="Microsoft Hanhan Desktop">Hanhan（台灣女聲，SAPI）</option>
+              <option value="Microsoft Zira Desktop">Zira（英語女聲，SAPI）</option>
+              <option value="Microsoft David Desktop">David（英語男聲，SAPI）</option>
+            </optgroup>
+          </select>
+          <p class="hint">
+            譯文會送到本機服務的通用 <b>/tts</b> 介面取回語音，一句唸一次、跟字幕同步。
+            還沒接上語音模型時打勾不會有聲音，字幕照常。設定方式見 <b>local-asr\README.md</b>。
           </p>
         </section>
       </div>
@@ -211,7 +247,7 @@
       </section>
 
       <section class="field checkline">
-        <label><input type="checkbox" id="showSeg" checked /><span>在字幕上標示音訊片段（每段字幕文字後面一個流水號，交錯顯示成「文字(1) 文字(2)」；聽到哪個片段接得怪，回報號碼就好）</span></label>
+        <label><input type="checkbox" id="showSeg" checked /><span>在字幕上標示音訊片段（每個色塊＝一次配音，色塊結尾標一個流水號；號碼出現時那一段正好開始唸，聽到接得怪回報號碼就好）</span></label>
       </section>
 
       <section class="field">
